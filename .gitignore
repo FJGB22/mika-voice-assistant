@@ -1,0 +1,16 @@
+# === Python: hasil sampingan interpreter ===
+__pycache__/
+*.pyc
+
+# === Environment: tidak pernah masuk repo ===
+.venv/
+
+# === Rahasia: API key, jangan sampai ter-commit ===
+.env
+
+# === Artefak build & tool ===
+*.egg-info/
+.pytest_cache/
+
+# === Data runtime milik program ===
+.mika/
