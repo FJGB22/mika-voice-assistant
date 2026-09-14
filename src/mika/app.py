@@ -25,6 +25,27 @@ def apply_env(values):
         os.environ.setdefault(key, value)
 
 
+def chat_loop():
+    history = []
+    while True:
+        text = input("You: ").strip()
+
+        if not text:
+            continue
+
+        if text.lower() in ("exit", "quit"):
+            print("Powering down. Goodbye!")
+            break
+
+        history.append({"role": "user", "content": text})
+
+        reply = "how can i help you with that?"  # tempat resposno llmnya nanti
+        print(f"Mika: {reply}")
+        history.append({"role": "assistant", "content": reply})
+
+    print(f"Total messages in history: {len(history)}")
+
+
 def main():
     print("Hello there! this is Mika, your AI assistant. How can I help you today?")
 
@@ -38,5 +59,7 @@ def main():
     if not llm_api_key:
         print(f"Error: {ENV_PATH} does not contain LLM_API_KEY. Please add it to the file.")
         return
-    
+
     print(f"LLM_API_KEY is set. the key has {len(llm_api_key)} characters.")
+
+    chat_loop()
