@@ -29,7 +29,7 @@ def apply_env(values):
         os.environ.setdefault(key, value)
 
 
-def chat_loop():
+def chat_loop(client):
     history = []
 
     while True:
@@ -43,19 +43,17 @@ def chat_loop():
             break
 
         history.append({"role": "user", "content": text})
-        reply = "how can i help you with that?"  # tempat resposno llmnya nanti
-        print(f"Mika: {reply}")
+        print("Mika: ", end="", flush=True)
+        reply = ask(history, client)
         history.append({"role": "assistant", "content": reply})
 
     print(f"Total messages in history: {len(history)}")
 
 
-def ask_once(question):
-    client = genai.Client(api_key=os.environ["LLM_API_KEY"])
-
+def ask(history, client):
     stream = client.interactions.create(
         model=MODEL,
-        input=question,
+        input=to_gemini_input(history),
         system_instruction=SYSTEM_PROMPT,
         stream=True,
         generation_config={
@@ -78,10 +76,31 @@ def ask_once(question):
     return "".join(parts)
 
 
+def to_gemini_input(messages):
+    gemini_messages = []
+
+    for message in messages:
+        if message["role"] == "user":
+            step_type = "user_input"
+        elif message["role"] == "assistant":
+            step_type = "model_output"
+        else:
+            raise ValueError(f"role tidak dikenal: {message['role']}")
+
+        gemini_messages.append({
+            "type": step_type,
+            "content": [{"type": "text", "text": message["content"]}],
+        })
+
+    return gemini_messages
+
+
 def main():
     print("Hello there! this is Mika, your AI assistant. How can I help you today?")
+
     env = load_env(ENV_PATH)
     print(f"Loaded environment variables: {len(env)}")
+
     apply_env(env)
     llm_api_key = os.environ.get("LLM_API_KEY")
 
@@ -90,8 +109,6 @@ def main():
         return
 
     print(f"LLM_API_KEY is set. the key has {len(llm_api_key)} characters.")
+    client = genai.Client(api_key=llm_api_key)
 
-    ask_once("Hello Mika, can you tell me a joke?")
-    ask_once("What is the capital of France?")
-    ask_once("tell me about cats")
-    ask_once("list the way to learn python programming")
+    chat_loop(client)
