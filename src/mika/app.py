@@ -1,10 +1,15 @@
 import os
+
 from google import genai
 
 # change this path to your desired location for the environment file
 ENV_PATH = os.path.normpath(os.path.expanduser("~/.secrets/mika-assistant.env"))
 MODEL = "gemini-3.5-flash-lite"
-SYSTEM_PROMPT = "You are Mika, a helpful and friendly AI assistant. You are here to assist the user with their questions and tasks. max 2 - 3 sentences per response, no markdown, no emojis, no offer for futher assistance"
+SYSTEM_PROMPT = """You are Mika, a helpful and friendly AI assistant.
+You help the user with their questions and tasks.
+Answer in at most 2-3 sentences.
+No markdown, no emoji.
+Do not offer further assistance at the end of your replies."""
 
 
 def load_env(path):
@@ -50,7 +55,10 @@ def chat_loop(client):
             try:
                 reply = ask(history, client)
             except Exception as e:
-                print(f"i'm sorry, there was an error processing your request. Please try again later. error details: {e}")
+                print(
+                    "i'm sorry, there was an error processing your request. "
+                    f"Please try again later. Error details: {e}"
+                )
                 continue
 
             history.append({"role": "assistant", "content": reply})
@@ -69,7 +77,7 @@ def ask(history, client):
         stream=True,
         generation_config={
             "max_output_tokens": 300,
-        }
+        },
     )
 
     parts = []
@@ -98,10 +106,12 @@ def to_gemini_input(messages):
         else:
             raise ValueError(f"unknown role: {message['role']}")
 
-        gemini_messages.append({
-            "type": step_type,
-            "content": [{"type": "text", "text": message["content"]}],
-        })
+        gemini_messages.append(
+            {
+                "type": step_type,
+                "content": [{"type": "text", "text": message["content"]}],
+            }
+        )
 
     return gemini_messages
 
@@ -112,7 +122,10 @@ def main():
     try:
         env = load_env(ENV_PATH)
     except FileNotFoundError:
-        print(f"Error: {ENV_PATH} not found. Please create the file and add your environment variables.")
+        print(
+            f"Error: {ENV_PATH} not found. "
+            "Please create the file and add your environment variables."
+        )
         return
 
     print(f"Loaded environment variables: {len(env)}")

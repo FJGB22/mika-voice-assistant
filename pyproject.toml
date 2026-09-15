@@ -9,7 +9,7 @@ requires-python = ">=3.11"
 dependencies = ["google-genai"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.scripts]
 mika = "mika.app:main"
@@ -19,3 +19,10 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
