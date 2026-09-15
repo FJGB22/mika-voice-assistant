@@ -1,7 +1,8 @@
 import os
 from google import genai
 
-ENV_PATH = os.path.expanduser("~/.secrets/mika-assistant.env")
+# change this path to your desired location for the environment file
+ENV_PATH = os.path.normpath(os.path.expanduser("~/.secrets/mika-assistant.env"))
 MODEL = "gemini-3.5-flash-lite"
 SYSTEM_PROMPT = "You are Mika, a helpful and friendly AI assistant. You are here to assist the user with their questions and tasks. max 2 - 3 sentences per response, no markdown, no emojis, no offer for futher assistance"
 
@@ -32,22 +33,32 @@ def apply_env(values):
 def chat_loop(client):
     history = []
 
-    while True:
-        text = input("You: ").strip()
+    try:
+        while True:
+            text = input("You: ").strip()
 
-        if not text:
-            continue
+            if not text:
+                continue
 
-        if text.lower() in ("exit", "quit"):
-            print("Powering down. Goodbye!")
-            break
+            if text.lower() in ("exit", "quit"):
+                print("Powering down. Goodbye!")
+                break
 
-        history.append({"role": "user", "content": text})
-        print("Mika: ", end="", flush=True)
-        reply = ask(history, client)
-        history.append({"role": "assistant", "content": reply})
+            history.append({"role": "user", "content": text})
+            print("Mika: ", end="", flush=True)
 
-    print(f"Total messages in history: {len(history)}")
+            try:
+                reply = ask(history, client)
+            except Exception as e:
+                print(f"i'm sorry, there was an error processing your request. Please try again later. error details: {e}")
+                continue
+
+            history.append({"role": "assistant", "content": reply})
+
+    except KeyboardInterrupt:
+        print("\nPowering down. Goodbye!")
+    finally:
+        print(f"Total messages in history: {len(history)}")
 
 
 def ask(history, client):
@@ -85,7 +96,7 @@ def to_gemini_input(messages):
         elif message["role"] == "assistant":
             step_type = "model_output"
         else:
-            raise ValueError(f"role tidak dikenal: {message['role']}")
+            raise ValueError(f"unknown role: {message['role']}")
 
         gemini_messages.append({
             "type": step_type,
@@ -98,7 +109,12 @@ def to_gemini_input(messages):
 def main():
     print("Hello there! this is Mika, your AI assistant. How can I help you today?")
 
-    env = load_env(ENV_PATH)
+    try:
+        env = load_env(ENV_PATH)
+    except FileNotFoundError:
+        print(f"Error: {ENV_PATH} not found. Please create the file and add your environment variables.")
+        return
+
     print(f"Loaded environment variables: {len(env)}")
 
     apply_env(env)
