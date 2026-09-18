@@ -14,3 +14,6 @@ __pycache__/
 
 # === Data runtime milik program ===
 .mika/
+
+# === Rekaman audio sementara ===
+*.wav

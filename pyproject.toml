@@ -10,6 +10,8 @@ dependencies = ["google-genai"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.6"]
+audio = ["sounddevice>=0.4.6", "numpy>=1.26"]
+whisper = ["faster-whisper>=1.0"]
 
 [project.scripts]
 mika = "mika.app:main"

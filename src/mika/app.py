@@ -1,13 +1,28 @@
 import os
+import time
+import wave
 
+import numpy as np
+import sounddevice as sd
+from faster_whisper import WhisperModel
 from google import genai
 
 # change this path to your desired location for the environment file
 ENV_PATH = os.path.normpath(os.path.expanduser("~/.secrets/mika-assistant.env"))
+
 MODEL = "gemini-3.5-flash-lite"
+
+WHISPER_MODEL = "base"
+WHISPER_LANGUAGE = "en"
+
+SAMPLE_RATE = 16000
+CHANNELS = 1
+SAMPLE_WIDTH = 2  # 16-bit audio | int16 = 2 bytes each sample
+RECORD_SECONDS = 5
+
 SYSTEM_PROMPT = """You are Mika, a helpful and friendly AI assistant.
 You help the user with their questions and tasks.
-Answer in at most 2-3    sentences.
+Answer in at most 2-3 sentences.
 No markdown, no emoji.
 Do not offer further assistance at the end of your replies."""
 
@@ -35,19 +50,28 @@ def apply_env(values):
         os.environ.setdefault(key, value)
 
 
-def chat_loop(client):
+def chat_loop(client, whisper):
     history = []
 
     try:
         while True:
-            text = input("You: ").strip()
+            command = input("Press enter to speak, or type a message: ").strip()
 
-            if not text:
-                continue
-
-            if text.lower() in ("exit", "quit"):
+            if command.lower() in ("exit", "quit"):
                 print("Powering down. Goodbye!")
                 break
+
+            if command:
+                text = command
+            else:
+                audio = record_audio()
+                save_wav(audio, "temp.wav")
+                text = transcribe(whisper, "temp.wav")
+                print(f"You said: {text}")
+
+            if not text:
+                print("No input detected. Please try again.")
+                continue
 
             history.append({"role": "user", "content": text})
             print("Mika: ", end="", flush=True)
@@ -116,6 +140,63 @@ def to_gemini_input(messages):
     return gemini_messages
 
 
+def list_audio_devices():
+    print(sd.query_devices())
+
+
+def record_audio(seconds=RECORD_SECONDS):
+    frame_count = int(SAMPLE_RATE * seconds)
+    print(f"Recording audio for {seconds} seconds...")
+
+    audio_data = sd.rec(frame_count, samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="int16")
+    sd.wait()  # Wait until recording is finished
+
+    peak = np.abs(audio_data).max()
+    print(f"Peak audio level: {peak} out of 32767 ({peak / 32767:.2%})")
+    if peak < 0.10 * 32767:
+        print("Warning: input level is low. Check your microphone.")
+
+    return audio_data
+
+
+def save_wav(audio, path):
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(CHANNELS)
+        wf.setsampwidth(SAMPLE_WIDTH)
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(audio.tobytes())
+
+
+def load_whisper():
+    print(f"Loading Whisper model '{WHISPER_MODEL}'...")
+    model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
+    print("Whisper model loaded.")
+    return model
+
+
+def transcribe(model, path):
+    start = time.perf_counter()
+
+    segments, _info = model.transcribe(
+        path,
+        language=WHISPER_LANGUAGE,
+        beam_size=1,
+        vad_filter=True,
+        condition_on_previous_text=False,
+    )
+
+    texts = []
+
+    for segment in segments:
+        texts.append(segment.text)
+
+    text = "".join(texts).strip()
+    end = time.perf_counter()
+
+    print(f"Transcription time: {end - start:.2f} seconds")
+    return text
+
+
 def main():
     print("Hello there! this is Mika, your AI assistant. How can I help you today?")
 
@@ -140,4 +221,5 @@ def main():
     print(f"LLM_API_KEY is set. the key has {len(llm_api_key)} characters.")
     client = genai.Client(api_key=llm_api_key)
 
-    chat_loop(client)
+    whisper = load_whisper()
+    chat_loop(client, whisper)

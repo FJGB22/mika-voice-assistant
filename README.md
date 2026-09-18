@@ -46,9 +46,9 @@ Secrets live **outside** the repository, at:
 
 See `.env.example` for the variables the program expects. Currently:
 
-|    Variable   | Required |     Purpose    |
-|---------------|----------|----------------|
-| `LLM_API_KEY` |    yes   | Gemini API key |
+| Variable | Required | Purpose |
+|---|---|---|
+| `LLM_API_KEY` | yes | Gemini API key |
 
 The lookup order is **system environment first, file second**. A value already
 present in the environment is never overwritten by the file. That way the same
