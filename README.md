@@ -1,10 +1,11 @@
 # Mika
 
-A small voice-assistant project, built one stage at a time. Right now it is a
-text chat assistant: it reads its configuration from outside the repository,
+A small voice-assistant project, built one stage at a time. Right now it runs on
+a laptop: you can type, or speak for five seconds and have it transcribed locally
+with faster-whisper. It reads its configuration from outside the repository,
 streams answers from Gemini, and remembers the conversation.
 
-Later stages add speech input, speech output, and an ESP32 microphone client.
+Later stages add speech output and an ESP32 microphone client.
 
 ## Requirements
 
@@ -22,8 +23,12 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # macOS / Linux
 
-pip install -e ".[dev]"
+pip install -e ".[dev,audio,whisper]"
 ```
+
+Running `mika` needs both `audio` and `whisper`, because `app.py` imports the
+microphone and transcription code at startup. The tests need `audio` too, for numpy.
+faster-whisper is a large download, so the first install takes a few minutes.
 
 Verify from outside the project folder:
 
@@ -124,8 +129,9 @@ subclass of `Exception`, so the broad handler around the API call does not
 swallow it. Without that separation, the program could not be stopped while
 it was answering.
 
-**Language convention.** Code in English. Comments and commit messages in
-English as well, so the repository reads consistently.
+**Language convention.** Code, comments and documentation in English. Commit
+messages are in Indonesian, using conventional prefixes (`feat:`, `fix:`,
+`refactor:`, `docs:`, `chore:`).
 
 ## Project layout
 
@@ -134,12 +140,19 @@ mika/
 ├─ src/mika/
 │  ├─ __init__.py
 │  ├─ __main__.py      # entry point for `python -m mika`
-│  └─ app.py           # everything else, for now
+│  ├─ app.py           # chat loop: typed or spoken input, history, errors
+│  ├─ config.py        # reads secrets from outside the repo
+│  ├─ llm.py           # Gemini streaming + history translation
+│  ├─ audio.py         # microphone recording, WAV output, level meter
+│  ├─ stt.py           # faster-whisper transcription
+│  └─ vad.py           # frame loudness in dB
 ├─ tests/
-│  └─ test_app.py
+│  ├─ test_config.py
+│  ├─ test_llm.py
+│  └─ test_vad.py
 ├─ .env.example
 └─ pyproject.toml
 ```
 
-`app.py` stays a single file until splitting it earns its keep — likely when
-audio handling arrives and the file starts changing for unrelated reasons.
+`app.py` was split once audio arrived and the file started changing for unrelated
+reasons: each module now has one reason to change.
