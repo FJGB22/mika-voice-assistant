@@ -17,6 +17,7 @@ def load_env(path):
         if not line or line.startswith("#"):
             continue
 
+        # partition splits at the first "=" only, so values may contain "=".
         key, _, value = line.partition("=")
         values[key.strip()] = value.strip()
 
@@ -25,6 +26,7 @@ def load_env(path):
 
 def apply_env(values):
     for key, value in values.items():
+        # A value already in the real environment wins over the file (e.g. on a server).
         os.environ.setdefault(key, value)
 
 

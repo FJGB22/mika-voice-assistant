@@ -68,6 +68,7 @@ def main():
         print(f"Error: {ENV_PATH} does not contain {LLM_API_KEY_NAME}. Please add it to the file.")
         return
 
+        # Only the length: enough to spot an empty or cut-off key without showing it.
     print(f"{LLM_API_KEY_NAME} is set. the key has {len(llm_api_key)} characters.")
 
     client = make_client(llm_api_key)

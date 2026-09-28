@@ -17,3 +17,6 @@ __pycache__/
 
 # === Rekaman audio sementara ===
 *.wav
+
+# === Catatan belajar pribadi, hanya lokal ===
+notes/

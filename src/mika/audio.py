@@ -5,7 +5,7 @@ import sounddevice as sd
 
 from mika.vad import frame_db
 
-SAMPLE_RATE = 16000
+SAMPLE_RATE = 16000  # Whisper works at 16 kHz, so no resampling is needed
 CHANNELS = 1
 SAMPLE_WIDTH = 2  # 16-bit audio | int16 = 2 bytes each sample
 RECORD_SECONDS = 5
@@ -25,6 +25,7 @@ def record_audio(seconds=RECORD_SECONDS):
     audio_data = sd.rec(frame_count, samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="int16")
     sd.wait()  # Wait until recording is finished
 
+    # int32 first: abs(-32768) does not fit in int16 and would wrap around.
     peak = np.abs(audio_data.astype(np.int32)).max()
     print(f"Peak audio level: {peak} out of 32767 ({peak / 32767:.2%})")
     if peak < 0.10 * 32767:
@@ -51,6 +52,7 @@ def meter(seconds=10):
     ) as stream:
         for _ in range(frame_count):
             frame, overflowed = stream.read(FRAME_SAMPLES)
+            # Overflow means samples were dropped because we read too slowly.
             if overflowed:
                 overflows += 1
             db = frame_db(frame)

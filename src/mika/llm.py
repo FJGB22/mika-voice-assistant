@@ -1,6 +1,7 @@
 from google import genai
 
 MODEL = "gemini-3.5-flash-lite"
+# Replies will be spoken aloud later: short, and no symbols a TTS would read out.
 SYSTEM_PROMPT = """You are Mika, a helpful and friendly AI assistant.
 You help the user with their questions and tasks.
 Answer in at most 2-3 sentences.

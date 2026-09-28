@@ -3,6 +3,7 @@ import time
 from faster_whisper import WhisperModel
 
 WHISPER_MODEL = "base"
+# A fixed language skips auto-detection, which is slow and unreliable on short clips.
 WHISPER_LANGUAGE = "en"
 
 
@@ -21,9 +22,11 @@ def transcribe(model, path):
         language=WHISPER_LANGUAGE,
         beam_size=1,
         vad_filter=True,
-        condition_on_previous_text=False,
+        condition_on_previous_text=False,  # avoids repeated or looping text
     )
 
+    # segments is a generator: transcription happens inside this loop,
+    # so the timer has to stop after it.
     texts = []
 
     for segment in segments:
