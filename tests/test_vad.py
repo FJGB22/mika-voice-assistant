@@ -3,6 +3,9 @@ import pytest
 
 from mika.vad import (
     CONTINUE,
+    DONE,
+    END_FRAMES,
+    MAX_SPEECH_FRAMES,
     MAX_WAIT_FRAMES,
     NO_SPEECH,
     SILENCE_DB,
@@ -39,7 +42,7 @@ def feed(detector, frame, count):
     return results
 
 
-def test_enough_loud_frames_starts_speaking():
+def test_waiting_enough_loud_frames_starts_speaking():
     detector = SpeechDetector()
     results = feed(detector, LOUD, START_FRAMES)
 
@@ -48,7 +51,7 @@ def test_enough_loud_frames_starts_speaking():
     assert results[-1] == CONTINUE
 
 
-def test_single_knock_is_ignored():
+def test_waiting_single_knock_is_ignored():
     detector = SpeechDetector()
     results = feed(detector, LOUD, 1)
     results += feed(detector, QUIET, 1)
@@ -58,7 +61,7 @@ def test_single_knock_is_ignored():
     assert results[-1] == CONTINUE
 
 
-def test_silence_times_out():
+def test_waiting_silence_times_out():
     detector = SpeechDetector()
     results = feed(detector, QUIET, MAX_WAIT_FRAMES)
 
@@ -68,7 +71,8 @@ def test_silence_times_out():
     assert results[-2] == CONTINUE
 
 
-def test_speech_near_timeout_is_not_cut():
+def test_waiting_speech_near_timeout_is_not_cut():
+    # Regression: speech starting exactly at the 3 s deadline used to get NO_SPEECH.
     detector = SpeechDetector()
     results = feed(detector, QUIET, MAX_WAIT_FRAMES - 1)
     results += feed(detector, LOUD, START_FRAMES)
@@ -76,3 +80,39 @@ def test_speech_near_timeout_is_not_cut():
     assert detector.state == SPEAKING
     assert len(detector.frames) == START_FRAMES
     assert results[-1] == CONTINUE
+
+
+def start_speaking():
+    # Through the real WAITING path, so these tests also cover the switch and pre-roll.
+    detector = SpeechDetector()
+    feed(detector, LOUD, START_FRAMES)
+    return detector
+
+
+def test_speaking_silence_ends_speech():
+    detector = start_speaking()
+    results = feed(detector, QUIET, END_FRAMES)
+
+    assert results[-1] == DONE
+    assert results[-2] == CONTINUE
+    assert len(detector.frames) == START_FRAMES + END_FRAMES
+
+
+def test_speaking_short_pause_does_not_end_speech():
+    detector = start_speaking()
+    results = feed(detector, QUIET, END_FRAMES - 1)
+    results += feed(detector, LOUD, 1)
+    results += feed(detector, QUIET, END_FRAMES - 1)
+
+    assert set(results) == {CONTINUE}
+    assert len(detector.frames) == START_FRAMES + 2 * (END_FRAMES - 1) + 1
+
+
+def test_speaking_speech_is_capped_at_max_length():
+    detector = start_speaking()
+    # start_speaking() already stored START_FRAMES of pre-roll, which counts.
+    results = feed(detector, LOUD, MAX_SPEECH_FRAMES - START_FRAMES)
+
+    assert results[-1] == DONE
+    assert results[-2] == CONTINUE
+    assert len(detector.frames) == MAX_SPEECH_FRAMES
