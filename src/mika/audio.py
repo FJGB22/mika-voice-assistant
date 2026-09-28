@@ -3,12 +3,11 @@ import wave
 import numpy as np
 import sounddevice as sd
 
-from mika.vad import frame_db
+from mika.vad import DONE, NO_SPEECH, SpeechDetector, frame_db
 
 SAMPLE_RATE = 16000  # Whisper works at 16 kHz, so no resampling is needed
 CHANNELS = 1
 SAMPLE_WIDTH = 2  # 16-bit audio | int16 = 2 bytes each sample
-RECORD_SECONDS = 5
 
 FRAME_MS = 20
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 320 samples for 20 ms at 16 kHz
@@ -16,22 +15,6 @@ FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 320 samples for 20 ms at 16 kH
 
 def list_audio_devices():
     print(sd.query_devices())
-
-
-def record_audio(seconds=RECORD_SECONDS):
-    frame_count = int(SAMPLE_RATE * seconds)
-    print(f"Recording audio for {seconds} seconds...")
-
-    audio_data = sd.rec(frame_count, samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="int16")
-    sd.wait()  # Wait until recording is finished
-
-    # int32 first: abs(-32768) does not fit in int16 and would wrap around.
-    peak = np.abs(audio_data.astype(np.int32)).max()
-    print(f"Peak audio level: {peak} out of 32767 ({peak / 32767:.2%})")
-    if peak < 0.10 * 32767:
-        print("Warning: input level is low. Check your microphone.")
-
-    return audio_data
 
 
 def save_wav(audio, path):
@@ -61,3 +44,27 @@ def meter(seconds=10):
 
     print()
     print(f"Overflows detected: {overflows}")
+
+
+def record_until_silence():
+    detector = SpeechDetector()
+    overflows = 0
+    print("listening...")
+
+    with sd.InputStream(
+        samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="int16", blocksize=FRAME_SAMPLES
+    ) as stream:
+        while True:
+            frame, overflowed = stream.read(FRAME_SAMPLES)
+            if overflowed:
+                overflows += 1
+
+            detection = detector.process(frame)
+            if detection == DONE:
+                print("done listening.")
+                if overflows > 0:
+                    print(f"Overflows detected: {overflows}")
+                return np.concatenate(detector.frames, axis=0)
+
+            if detection == NO_SPEECH:
+                return None

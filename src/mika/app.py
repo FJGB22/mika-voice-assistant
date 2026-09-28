@@ -1,4 +1,4 @@
-from mika.audio import record_audio, save_wav
+from mika.audio import record_until_silence, save_wav
 from mika.config import ENV_PATH, LLM_API_KEY_NAME, apply_env, get_llm_api_key, load_env
 from mika.llm import ask, make_client
 from mika.stt import load_whisper, transcribe
@@ -18,7 +18,11 @@ def chat_loop(client, whisper):
             if command:
                 text = command
             else:
-                audio = record_audio()
+                audio = record_until_silence()
+                if audio is None:
+                    print("No speech detected. Please try again.")
+                    continue
+
                 save_wav(audio, "temp.wav")
                 text = transcribe(whisper, "temp.wav")
                 print(f"You said: {text}")
