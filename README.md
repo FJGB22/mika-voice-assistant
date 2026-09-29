@@ -1,9 +1,9 @@
 # Mika
 
 A small voice-assistant project, built one stage at a time. Right now it runs on
-a laptop: you can type, or speak for five seconds and have it transcribed locally
-with faster-whisper. It reads its configuration from outside the repository,
-streams answers from Gemini, and remembers the conversation.
+a laptop: you can type, or just speak. It records until you stop talking and
+transcribes locally with faster-whisper. It reads its configuration from outside
+the repository, streams answers from Gemini, and remembers the conversation.
 
 Later stages add speech output and an ESP32 microphone client.
 
@@ -66,8 +66,17 @@ environment variable rather than a file.
 mika
 ```
 
-Type your message and press Enter. To quit: type `exit` or `quit`, or press
-Ctrl-C at any point — including while an answer is still streaming.
+Type your message and press Enter, or press Enter on an empty line and speak.
+Recording stops by itself about half a second after you stop talking. To quit:
+type `exit` or `quit`, or press Ctrl-C at any point — including while an answer
+is still streaming.
+
+If speech is never detected, your microphone may be quieter than the
+-40 dB threshold in `vad.py`. Check its levels with:
+
+```bash
+python -c "from mika.audio import meter; meter()"
+```
 
 ## Development
 
@@ -129,6 +138,17 @@ subclass of `Exception`, so the broad handler around the API call does not
 swallow it. Without that separation, the program could not be stopped while
 it was answering.
 
+**Speech is detected by a small state machine, not a fixed timer.**
+`SpeechDetector` has two states. WAITING starts recording after 200 ms of sound
+in a row and keeps those frames as pre-roll, so the first word is not cut off;
+it gives up after 3 s with nobody speaking. SPEAKING ends after 500 ms of
+unbroken silence, or at a 10 s cap. It counts consecutive frames instead of
+averaging levels, because with an average the real timeout would depend on how
+loud you speak. When nobody speaks, the recorder returns `None` and Whisper is
+skipped entirely. The detector never touches the microphone: frames are handed
+in, so the same logic will work for audio arriving from the ESP32, and it is
+tested with synthetic frames.
+
 **Language convention.** Code, comments and documentation in English. Commit
 messages are in Indonesian, using conventional prefixes (`feat:`, `fix:`,
 `refactor:`, `docs:`, `chore:`).
@@ -143,9 +163,9 @@ mika/
 │  ├─ app.py           # chat loop: typed or spoken input, history, errors
 │  ├─ config.py        # reads secrets from outside the repo
 │  ├─ llm.py           # Gemini streaming + history translation
-│  ├─ audio.py         # microphone recording, WAV output, level meter
+│  ├─ audio.py         # microphone input until silence, WAV output, level meter
 │  ├─ stt.py           # faster-whisper transcription
-│  └─ vad.py           # frame loudness in dB
+│  └─ vad.py           # loudness in dB, start/end-of-speech detection
 ├─ tests/
 │  ├─ test_config.py
 │  ├─ test_llm.py
