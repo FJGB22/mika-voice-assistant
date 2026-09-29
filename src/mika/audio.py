@@ -1,5 +1,3 @@
-import wave
-
 import numpy as np
 import sounddevice as sd
 
@@ -7,7 +5,6 @@ from mika.vad import DONE, NO_SPEECH, SpeechDetector, frame_db
 
 SAMPLE_RATE = 16000  # Whisper works at 16 kHz, so no resampling is needed
 CHANNELS = 1
-SAMPLE_WIDTH = 2  # 16-bit audio | int16 = 2 bytes each sample
 
 FRAME_MS = 20
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 320 samples for 20 ms at 16 kHz
@@ -15,14 +12,6 @@ FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 320 samples for 20 ms at 16 kH
 
 def list_audio_devices():
     print(sd.query_devices())
-
-
-def save_wav(audio, path):
-    with wave.open(path, "wb") as wf:
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(SAMPLE_WIDTH)
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(audio.tobytes())
 
 
 def meter(seconds=10):

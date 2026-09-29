@@ -27,7 +27,7 @@ pip install -e ".[dev,audio,whisper]"
 ```
 
 Running `mika` needs both `audio` and `whisper`, because `app.py` imports the
-microphone and transcription code at startup. The tests need `audio` too, for numpy.
+microphone and transcription code at startup. The tests need `audio` and `whisper` too.
 faster-whisper is a large download, so the first install takes a few minutes.
 
 Verify from outside the project folder:

@@ -1,6 +1,9 @@
 import time
 
+import numpy as np
 from faster_whisper import WhisperModel
+
+from mika.vad import FULL_SCALE
 
 WHISPER_MODEL = "base"
 # A fixed language skips auto-detection, which is slow and unreliable on short clips.
@@ -14,11 +17,11 @@ def load_whisper():
     return model
 
 
-def transcribe(model, path):
+def transcribe(model, audio):
     start = time.perf_counter()
 
     segments, _info = model.transcribe(
-        path,
+        to_whisper_input(audio),
         language=WHISPER_LANGUAGE,
         beam_size=1,
         vad_filter=True,
@@ -37,3 +40,8 @@ def transcribe(model, path):
 
     print(f"Transcription time: {end - start:.2f} seconds")
     return text
+
+
+def to_whisper_input(audio):
+    flat = audio[:, 0]
+    return flat.astype(np.float32) / FULL_SCALE  # Whisper expects float32 in [-1, 1]
