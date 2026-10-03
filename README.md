@@ -149,6 +149,13 @@ skipped entirely. The detector never touches the microphone: frames are handed
 in, so the same logic will work for audio arriving from the ESP32, and it is
 tested with synthetic frames.
 
+**Audio reaches Whisper as an array, not a file.** The recording is converted in
+memory from int16 to float32 in [-1.0, 1.0] and handed to faster-whisper
+directly; nothing is written to disk. Audio from the ESP32 will arrive over the
+network, not from a file, so this is the path it will take too. The divisor is
+32768, not 32767: int16 runs from -32768 to 32767, and dividing by 32767 would
+put the lowest sample just outside the range.
+
 **Language convention.** Code, comments and documentation in English. Commit
 messages are in Indonesian, using conventional prefixes (`feat:`, `fix:`,
 `refactor:`, `docs:`, `chore:`).
@@ -163,12 +170,13 @@ mika/
 │  ├─ app.py           # chat loop: typed or spoken input, history, errors
 │  ├─ config.py        # reads secrets from outside the repo
 │  ├─ llm.py           # Gemini streaming + history translation
-│  ├─ audio.py         # microphone input until silence, WAV output, level meter
+│  ├─ audio.py         # microphone input until silence, level meter
 │  ├─ stt.py           # faster-whisper transcription
 │  └─ vad.py           # loudness in dB, start/end-of-speech detection
 ├─ tests/
 │  ├─ test_config.py
 │  ├─ test_llm.py
+│  ├─ test_stt.py
 │  └─ test_vad.py
 ├─ .env.example
 └─ pyproject.toml

@@ -15,7 +15,7 @@ __pycache__/
 # === Data runtime milik program ===
 .mika/
 
-# === Rekaman audio sementara ===
+# === Rekaman audio untuk uji/debug (program tidak lagi menulis WAV) ===
 *.wav
 
 # === Catatan belajar pribadi, hanya lokal ===
