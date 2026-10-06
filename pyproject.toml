@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mika"
 version = "0.1.0"
+description = "Mika, a voice assistant: laptop chat and a server for an ESP32 satellite"
 requires-python = ">=3.11"
 dependencies = ["google-genai"]
 
@@ -12,7 +13,7 @@ dependencies = ["google-genai"]
 dev = ["pytest>=8.0", "ruff>=0.6"]
 audio = ["sounddevice>=0.4.6", "numpy>=1.26"]
 whisper = ["faster-whisper>=1.0"]
-net = ["websockets>=15"]
+net = ["websockets>=15", "numpy>=1.26"]
 
 [project.scripts]
 mika = "mika.app:main"
@@ -25,7 +26,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py311"  # same as requires-python, so ruff never suggests newer syntax
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
