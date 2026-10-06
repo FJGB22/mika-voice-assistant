@@ -17,6 +17,10 @@ CONTINUE = "continue"
 DONE = "done"
 NO_SPEECH = "no_speech"  # nobody spoke: skip transcription
 
+SAMPLE_RATE = 16000  # Whisper works at 16 kHz, so no resampling is needed
+FRAME_MS = 20
+FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 320 samples for 20 ms at 16 kHz
+
 
 def frame_db(frame):
     cvt_frame = frame.astype(np.float64)  # squaring int16 would overflow

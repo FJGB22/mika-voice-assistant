@@ -1,13 +1,9 @@
 import numpy as np
 import sounddevice as sd
 
-from mika.vad import DONE, NO_SPEECH, SpeechDetector, frame_db
+from mika.vad import DONE, FRAME_MS, FRAME_SAMPLES, NO_SPEECH, SAMPLE_RATE, SpeechDetector, frame_db
 
-SAMPLE_RATE = 16000  # Whisper works at 16 kHz, so no resampling is needed
 CHANNELS = 1
-
-FRAME_MS = 20
-FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 320 samples for 20 ms at 16 kHz
 
 
 def list_audio_devices():
