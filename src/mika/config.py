@@ -1,6 +1,6 @@
 import os
 
-# change this path to your desired location for the environment file
+# Outside the repository on purpose: see "Secrets live outside the project folder" in README.
 ENV_PATH = os.path.normpath(os.path.expanduser("~/.secrets/mika-assistant.env"))
 LLM_API_KEY_NAME = "LLM_API_KEY"
 

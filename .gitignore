@@ -11,6 +11,7 @@ __pycache__/
 # === Artefak build & tool ===
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
 
 # === Data runtime milik program ===
 .mika/
@@ -20,3 +21,6 @@ __pycache__/
 
 # === Catatan belajar pribadi, hanya lokal ===
 notes/
+
+# === Pengaturan editor pribadi (VS Code) ===
+.vscode/

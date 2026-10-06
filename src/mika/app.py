@@ -37,7 +37,7 @@ def chat_loop(client, whisper):
                 reply = ask(history, client)
             except Exception as e:
                 print(
-                    "i'm sorry, there was an error processing your request. "
+                    "I'm sorry, there was an error processing your request. "
                     f"Please try again later. Error details: {e}"
                 )
                 continue
@@ -51,7 +51,7 @@ def chat_loop(client, whisper):
 
 
 def main():
-    print("Hello there! this is Mika, your AI assistant. How can I help you today?")
+    print("Hello there! This is Mika, your AI assistant. How can I help you today?")
 
     try:
         env = load_env(ENV_PATH)
@@ -72,7 +72,7 @@ def main():
         return
 
     # Only the length: enough to spot an empty or cut-off key without showing it.
-    print(f"{LLM_API_KEY_NAME} is set. the key has {len(llm_api_key)} characters.")
+    print(f"{LLM_API_KEY_NAME} is set. The key has {len(llm_api_key)} characters.")
 
     client = make_client(llm_api_key)
     whisper = load_whisper()
