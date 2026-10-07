@@ -13,7 +13,7 @@ dependencies = ["google-genai"]
 dev = ["pytest>=8.0", "ruff>=0.6"]
 audio = ["sounddevice>=0.4.6", "numpy>=1.26"]
 whisper = ["faster-whisper>=1.0"]
-net = ["websockets>=15", "numpy>=1.26"]
+net = ["websockets>=15", "numpy>=1.26", "zeroconf>=0.130"]
 
 [project.scripts]
 mika = "mika.app:main"

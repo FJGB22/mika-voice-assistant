@@ -5,6 +5,7 @@ from websockets.exceptions import ConnectionClosedError
 
 from mika import protocol
 from mika.config import ENV_PATH, LLM_API_KEY_NAME, apply_env, get_llm_api_key, load_env
+from mika.discovery import announce
 from mika.llm import ask, make_client
 from mika.session import THINKING, Session
 from mika.stt import load_whisper, transcribe
@@ -78,7 +79,8 @@ async def run(client, whisper):
     # Raw PCM barely compresses, so deflate would only cost CPU on both ends.
     async with serve(make_handler(client, whisper), HOST, PORT, compression=None) as server:
         print(f"Listening on ws://{HOST}:{PORT}")
-        await server.serve_forever()
+        async with announce(PORT):
+            await server.serve_forever()
 
 
 def main():

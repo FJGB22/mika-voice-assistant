@@ -1,26 +1,26 @@
-# === Python: hasil sampingan interpreter ===
+# === Python: interpreter by-products ===
 __pycache__/
 *.pyc
 
-# === Environment: tidak pernah masuk repo ===
+# === Virtual environment: never in the repo ===
 .venv/
 
-# === Rahasia: API key, jangan sampai ter-commit ===
+# === Secrets: API keys must never be committed ===
 .env
 
-# === Artefak build & tool ===
+# === Build and tool artifacts ===
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
 
-# === Data runtime milik program ===
+# === Runtime data written by the program ===
 .mika/
 
-# === Rekaman audio untuk uji/debug (program tidak lagi menulis WAV) ===
+# === Audio recordings for testing/debugging (the program no longer writes WAV) ===
 *.wav
 
-# === Catatan belajar pribadi, hanya lokal ===
+# === Personal study notes, local only ===
 notes/
 
-# === Pengaturan editor pribadi (VS Code) ===
+# === Personal editor settings (VS Code) ===
 .vscode/
