@@ -6,12 +6,19 @@ the group: nothing here is final until the firmware side agrees.
 ## Connection
 
 - WebSocket, plain `ws://`, port `8765`.
-- Server address: `ws://mika.local:8765`, found over mDNS, so the firmware does
-  not hard-code an IP that changes with every network (home Wi-Fi, campus,
-  phone hotspot). On Arduino-ESP32, `MDNS.queryHost("mika")` resolves it.
-  **Not yet available:** the server does not announce `mika.local` yet. Until it
-  does, use the laptop's LAN IP (`ipconfig` → Wi-Fi → IPv4 Address), for example
-  `ws://192.168.1.20:8765`.
+- Server address: `ws://mika.local:8765`. The server announces itself over mDNS,
+  so the firmware does not hard-code an IP that changes with every network
+  (home Wi-Fi, campus, phone hotspot). Two ways to find it on Arduino-ESP32:
+  - `MDNS.queryHost("mika")` returns the address; the port is 8765.
+  - `MDNS.queryService("mika", "tcp")` finds the `_mika._tcp` service and
+    returns both address and port, so a changed port needs no new firmware.
+- Look the address up again before every reconnect: the laptop may have moved
+  to another network and got a new IP.
+- Fallback: some networks (often campus or office Wi-Fi) block the multicast
+  that mDNS relies on. There, use the laptop's LAN IP instead
+  (`ipconfig` → Wi-Fi → IPv4 Address), for example `ws://192.168.1.20:8765`.
+  `python -m mika.discovery` on another laptop shows whether mDNS works on
+  that network.
 - One connection per satellite. The server keeps one conversation history per
   connection, so reconnecting starts a fresh conversation.
 - No compression extension (raw PCM barely compresses).
@@ -130,8 +137,8 @@ change the state or the LED. That is what the "Turn over?" column above means.
 
 - Trigger: a push button for now; a wake word ("Hey Mika") on the device later.
   Both send the same `start` message.
-- Server discovery: mDNS name `mika.local` (server side still to be built; use
-  the LAN IP until then).
+- Server discovery: mDNS, name `mika.local`, service `_mika._tcp`; the LAN IP
+  as a fallback where multicast is blocked.
 - Server location: the laptop for now; where it runs later is still open.
 
 ## Open questions for the group

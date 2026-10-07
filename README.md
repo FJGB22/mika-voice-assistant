@@ -8,8 +8,9 @@ A small voice-assistant project, built one stage at a time. It runs in two ways:
 - **As a server for a satellite** (`python -m mika.server`): a small device
   (an ESP32-S3 with a microphone) streams audio over WebSocket on the local
   network; the server detects the end of speech, transcribes, asks Gemini, and
-  sends the text back. Until the firmware is ready, `fake_satellite` plays the
-  device's part from the laptop.
+  sends the text back. The server announces itself as `mika.local` (mDNS), so
+  the device finds it without a hard-coded IP address. Until the firmware is
+  ready, `fake_satellite` plays the device's part from the laptop.
 
 Later stages add speech output (TTS), a wake word, and real-time data such as
 weather and time.
@@ -39,7 +40,7 @@ The extras keep installs small where a part is not needed:
 |---|---|---|
 | `audio` | sounddevice, numpy | the laptop mic: `mika` and `fake_satellite` |
 | `whisper` | faster-whisper | transcription: `mika`, the server |
-| `net` | websockets, numpy | the server and `fake_satellite` |
+| `net` | websockets, numpy, zeroconf | the server, `fake_satellite`, and `mika.discovery` |
 | `dev` | pytest, ruff | tests and linting (the tests also need `whisper` and `net`) |
 
 faster-whisper is a large download, so the first install takes a few minutes.
@@ -100,10 +101,35 @@ python -c "from mika.audio import meter; meter()"
 python -m mika.server
 ```
 
-Wait for `Listening on ws://0.0.0.0:8765`. The first time, Windows Firewall
-asks whether to allow it: allow **Private networks** only, never Public.
+Wait for two lines:
 
-Then, in a second terminal, play the device's part:
+```
+Listening on ws://0.0.0.0:8765
+mDNS: announced as mika.local (192.168.1.20)
+```
+
+The address in the second line should match `ipconfig` → Wi-Fi → IPv4 Address.
+The first time, Windows Firewall asks whether to allow Python: allow **Private
+networks** only, never Public, and make sure your Wi-Fi profile is set to
+Private. mDNS uses UDP port 5353, so a blocked firewall stops the announcement
+from being heard even though the server prints it.
+
+If the server cannot announce, it says why on the `mDNS:` line and keeps
+running: with no network at all, or when another machine on the same Wi-Fi is
+already `mika.local` (for example a groupmate running the server too). In both
+cases satellites can still connect by IP (see below).
+
+Check that the announcement reaches the network, in a second terminal:
+
+```bash
+python -m mika.discovery
+```
+
+It should print `Found mika.local. at 192.168.1.20, port 8765` (the trailing dot
+is normal). It asks the same question the ESP32 asks, so if this works from a
+second laptop on the same Wi-Fi, the device will find the server too.
+
+Then play the device's part:
 
 ```bash
 python -m mika.fake_satellite                 # press Enter, then speak
@@ -119,14 +145,31 @@ For one question the satellite should print, in order: `listening`, `stop`
 (`speech_end`), `transcript`, `reply`. Pressing Enter and staying silent ends
 with `stop` (`no_speech`).
 
-To reach the server from another machine or the ESP32, use the laptop's LAN
-address (`ipconfig` → Wi-Fi → IPv4 Address), for example
-`python -m mika.fake_satellite ws://192.168.1.20:8765`. The wire format is in
-[`docs/protocol.md`](docs/protocol.md).
+Without a URL, `fake_satellite` connects to `localhost`. To go through the name
+the ESP32 uses, pass it explicitly:
+
+```bash
+python -m mika.fake_satellite --wav temp.wav ws://mika.local:8765
+```
+
+Windows 10 and 11 resolve `.local` names themselves. If `mika.discovery` finds
+the server but this fails to connect, the problem is the Windows resolver, not
+the server; the ESP32 has its own resolver.
+
+Some networks, often campus or office Wi-Fi, block the multicast that mDNS
+relies on. There, use the laptop's LAN address instead, for example
+`ws://192.168.1.20:8765`. Hotspots from a phone usually work. Try
+`python -m mika.discovery` on the network you will demo on, beforehand.
+
+Ctrl-C stops the server cleanly: it first tells the network to forget
+`mika.local`, so running `python -m mika.discovery` afterwards finds nothing.
+
+The wire format is in [`docs/protocol.md`](docs/protocol.md).
 
 **There is no authentication.** Anyone on the same Wi-Fi can connect and use
-your Gemini quota. Fine for a home or lab network; never expose the port to the
-internet.
+your Gemini quota, and the mDNS announcement tells every device on the network
+where the server is. Fine for a home or lab network; never expose the port to
+the internet.
 
 ## Development
 
@@ -140,8 +183,9 @@ Keep the linter output at zero. A standing warning trains you to ignore the
 output, and then the warnings that matter get lost in the noise.
 
 The tests need no microphone, no network access and no API key: Whisper and
-Gemini are replaced by fakes, and the server tests talk to a real WebSocket on
-`localhost` with a port the OS picks.
+Gemini are replaced by fakes, the server tests talk to a real WebSocket on
+`localhost` with a port the OS picks, and the mDNS tests use a fake socket and a
+fake zeroconf, so nothing is ever announced on your network.
 
 ### Pre-commit hook
 
@@ -233,6 +277,30 @@ loop free.
 **One session and one history per connection.** A reconnect starts a fresh
 conversation, and two satellites never see each other's history.
 
+**The server is found by name, over mDNS.** The laptop's IP changes with every
+network (home Wi-Fi, campus, phone hotspot) and every router restart; with the
+IP in the firmware, each change would mean flashing the device again. The
+server announces both the host name `mika.local` and the service `_mika._tcp`
+(address and port in one answer), and the satellite looks the name up before
+every reconnect. The LAN IP stays the fallback for networks that block
+multicast.
+
+**Only the interface that faces the network is announced.** A laptop also has
+virtual adapters (WSL, VirtualBox) with addresses a satellite cannot reach.
+`local_ip` asks the OS which interface it would use to go out, through a UDP
+socket whose `connect()` sends nothing, and only that address is announced.
+
+**Announcing is best effort; serving is not.** With no network, or with the
+name already taken by another machine, the server prints why and keeps running
+unannounced. A server that cannot be found by name can still be reached by IP;
+one that crashed cannot be reached at all.
+
+**The server says goodbye before it closes.** mDNS answers are cached for up to
+two minutes. On shutdown, including Ctrl-C and crashes, the server unregisters
+(an answer with TTL 0, "forget me now") and waits for those packets to go out
+before closing the socket. Otherwise a satellite could keep trying the old
+address after the server moved to another network.
+
 **Language convention.** Code, comments and documentation in English. Commit
 messages are in Indonesian, using conventional prefixes (`feat:`, `fix:`,
 `refactor:`, `docs:`, `chore:`).
@@ -253,6 +321,7 @@ mika/
 │  ├─ protocol.py        # wire format: frame decoding, JSON messages, constants
 │  ├─ session.py         # protocol rules for one satellite, no networking
 │  ├─ server.py          # WebSocket server: one Session per connection
+│  ├─ discovery.py       # mDNS: announce as mika.local, find a running server
 │  └─ fake_satellite.py  # stands in for the ESP32: laptop mic or a WAV file
 ├─ tests/
 │  ├─ test_config.py
@@ -261,7 +330,8 @@ mika/
 │  ├─ test_vad.py
 │  ├─ test_protocol.py
 │  ├─ test_session.py
-│  └─ test_server.py
+│  ├─ test_server.py
+│  └─ test_discovery.py
 ├─ docs/
 │  └─ protocol.md        # how a satellite talks to the server
 ├─ .env.example
@@ -270,4 +340,5 @@ mika/
 
 Each module has one reason to change: `protocol.py` when the contract with the
 firmware changes, `session.py` when the conversation rules change, `server.py`
-when the transport changes.
+when the transport changes, `discovery.py` when the way satellites find the
+server changes.
