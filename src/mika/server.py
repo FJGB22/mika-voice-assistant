@@ -1,7 +1,8 @@
 import asyncio
+import traceback
 
 from websockets.asyncio.server import serve
-from websockets.exceptions import ConnectionClosedError
+from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from mika import protocol
 from mika.config import ENV_PATH, LLM_API_KEY_NAME, apply_env, get_llm_api_key, load_env
@@ -32,43 +33,83 @@ async def send_all(websocket, messages):
         await websocket.send(protocol.encode_message(message))
 
 
+async def answer(websocket, session, audio, history, client, whisper):
+    try:
+        # Whisper and Gemini block for seconds; in a thread the event loop keeps
+        # answering pings, so the connection is not dropped.
+        transcript, reply = await asyncio.to_thread(
+            transcribe_and_ask, audio, history, client, whisper
+        )
+    except Exception as err:
+        print(f"Question failed: {err!r}")
+        messages = session.fail(protocol.SERVER_ERROR)
+    else:
+        if reply is None:
+            messages = session.fail(protocol.EMPTY_TRANSCRIPT)
+        else:
+            messages = session.finish(transcript, reply)
+    await send_all(websocket, messages)
+
+
+def report_crash(task):
+    # Runs when an answer task ends. Without it a bug inside the task would only show
+    # up as "Task exception was never retrieved", if at all.
+    # cancelled() first: exception() raises on a cancelled task.
+    if task.cancelled():
+        return
+    err = task.exception()
+    if err is None:
+        return
+    # A satellite that disconnects while the reply is being sent is normal for a device.
+    if isinstance(err, ConnectionClosed):
+        return
+    traceback.print_exception(err)
+
+
+def start_answer(answering, websocket, session, history, client, whisper):
+    # Called from the loop, not the task: a RuntimeError from take_utterance is a server
+    # bug and should crash loudly, not reach the satellite as a server_error.
+    audio = session.take_utterance()
+    # A task, not an await: the loop keeps reading, so a start that arrives meanwhile
+    # gets busy and stray frames are dropped by Session.
+    task = asyncio.create_task(answer(websocket, session, audio, history, client, whisper))
+    answering.add(task)
+    task.add_done_callback(answering.discard)
+    task.add_done_callback(report_crash)
+
+
 def make_handler(client, whisper):
     async def handler(websocket):
         # Created per connection: a reconnect starts a fresh session and conversation.
         session = Session()
         history = []
+        # asyncio keeps only weak references to tasks, so a task nobody holds can be
+        # garbage-collected mid-answer. The set holds them until they finish.
+        answering = set()
         print(f"Connected: {websocket.remote_address}")
         try:
             async for message in websocket:
+                was_thinking = session.state == THINKING
                 if isinstance(message, bytes):
                     messages_to_send = session.handle_audio(message)
                 else:
                     messages_to_send = session.handle_text(message)
                 await send_all(websocket, messages_to_send)
 
-                if session.state == THINKING:
-                    # Outside the try: a RuntimeError here is a server bug and should
-                    # crash loudly, not reach the satellite as a server_error.
-                    audio = session.take_utterance()
-                    try:
-                        # Whisper and Gemini block for seconds; in a thread the event
-                        # loop keeps answering pings, so the connection is not dropped.
-                        transcript, reply = await asyncio.to_thread(
-                            transcribe_and_ask, audio, history, client, whisper
-                        )
-                    except Exception as err:
-                        print(f"Question failed: {err!r}")
-                        await send_all(websocket, session.fail(protocol.SERVER_ERROR))
-                    else:
-                        if reply is None:
-                            await send_all(websocket, session.fail(protocol.EMPTY_TRANSCRIPT))
-                        else:
-                            await send_all(websocket, session.finish(transcript, reply))
+                # Only on the step into THINKING: while a question is answered, every
+                # later message also sees THINKING and must not start a second answer.
+                if session.state == THINKING and not was_thinking:
+                    start_answer(answering, websocket, session, history, client, whisper)
         except ConnectionClosedError:
             # How a satellite that loses power or Wi-Fi ends: normal for a device, so one
             # line instead of a "connection handler failed" traceback.
             print(f"Connection lost: {websocket.remote_address}")
         finally:
+            # Nobody is left to hear the answer. The thread still runs to the end (a
+            # thread cannot be cancelled), but its result is dropped instead of sent.
+            # list(): a task that finishes removes itself from the set.
+            for task in list(answering):
+                task.cancel()
             # In finally, so the line also appears when the connection drops abruptly.
             print(f"Disconnected: {websocket.remote_address}")
 

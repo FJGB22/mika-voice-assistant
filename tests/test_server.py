@@ -150,6 +150,26 @@ def test_handler_answers_a_question(fake_backend):
     assert llm.threads[0] is not threading.main_thread()
 
 
+def test_the_recorded_speech_reaches_whisper(monkeypatch):
+    heard = []
+
+    def record(audio, history, client, whisper):
+        heard.append(audio)
+        return "hello", "Hi!"
+
+    monkeypatch.setattr(server, "transcribe_and_ask", record)
+
+    talk([4])
+
+    # Every frame of the question, in order: the loud start first, the silence last.
+    # The fakes above ignore the audio, so without this a server that sent Whisper
+    # nothing (or the wrong recording) would still pass.
+    [audio] = heard
+    assert audio.shape == ((START_FRAMES + END_FRAMES) * FRAME_SAMPLES, 1)
+    assert audio[0, 0] == 3000
+    assert audio[-1, 0] == 0
+
+
 def test_handler_reports_empty_transcript(fake_backend):
     fake_backend([""], [])
 
@@ -175,3 +195,141 @@ def test_each_connection_has_its_own_history(fake_backend):
     talk([4], connections=2)  # one server, so a history shared by the server shows up
 
     assert llm.seen[1] == [{"role": "user", "content": "two"}]
+
+
+# --- while THINKING: the server keeps reading (Stage 4C) ---
+
+
+class SlowBackend:
+    """Stands in for transcribe_and_ask and holds every answer until release().
+
+    That keeps the server in THINKING for as long as a test needs, without sleeps.
+    """
+
+    def __init__(self):
+        self.gate = threading.Event()
+        self.calls = 0
+
+    def __call__(self, audio, history, client, whisper):
+        self.calls += 1
+        # The timeout ends a forgotten release() as a failure instead of a hung run.
+        assert self.gate.wait(5), "release() was never called"
+        return f"question {self.calls}", f"answer {self.calls}"
+
+    def release(self):
+        self.gate.set()
+
+
+@pytest.fixture
+def slow_backend(monkeypatch):
+    backend = SlowBackend()
+    monkeypatch.setattr(server, "transcribe_and_ask", backend)
+    yield backend
+    backend.release()  # never leave a worker thread waiting after a failed test
+
+
+def run_against_server(scenario):
+    async def main():
+        handler = server.make_handler(client=CLIENT, whisper=WHISPER)
+        async with serve(handler, "localhost", 0) as srv:
+            port = srv.sockets[0].getsockname()[1]
+            return await scenario(f"ws://localhost:{port}")
+
+    return asyncio.run(main())
+
+
+BUSY_MSG = {"type": protocol.ERROR, "code": protocol.BUSY}
+
+
+def answer_msgs(n):
+    return [
+        {"type": protocol.TRANSCRIPT, "text": f"question {n}"},
+        {"type": protocol.REPLY, "text": f"answer {n}"},
+    ]
+
+
+def test_start_while_thinking_gets_busy_before_the_answer(slow_backend):
+    async def scenario(url):
+        async with connect(url) as websocket:
+            await ask_once(websocket)
+            assert await receive(websocket, 2) == [LISTENING_MSG, SPEECH_END_MSG]
+
+            await websocket.send(START)
+            # busy must come while the answer is still held back: a server that stops
+            # reading while it thinks would only see this start after the reply.
+            busy = await receive(websocket, 1)
+
+            slow_backend.release()
+            return busy, await receive(websocket, 2)
+
+    busy, answer = run_against_server(scenario)
+
+    assert busy == [BUSY_MSG]
+    assert answer == answer_msgs(1)
+
+
+def test_speech_while_thinking_does_not_become_a_question(slow_backend):
+    async def scenario(url):
+        async with connect(url) as websocket:
+            await ask_once(websocket)
+            await receive(websocket, 2)
+
+            await ask_once(websocket)  # pressed again and spoken over the thinking
+            assert await receive(websocket, 1) == [BUSY_MSG]
+
+            slow_backend.release()
+            first = await receive(websocket, 2)
+
+            # The next question starts clean: no stale stop, no second answer queued.
+            await ask_once(websocket)
+            return first, await receive(websocket, 4)
+
+    first, second = run_against_server(scenario)
+
+    assert first == answer_msgs(1)
+    assert second == [LISTENING_MSG, SPEECH_END_MSG, *answer_msgs(2)]
+    assert slow_backend.calls == 2  # the frames sent while thinking were never transcribed
+
+
+def test_disconnect_while_thinking_sends_nothing_later(slow_backend, monkeypatch):
+    sent = []
+    real_send_all = server.send_all
+
+    async def spy_send_all(websocket, messages):
+        sent.extend(message["type"] for message in messages)
+        await real_send_all(websocket, messages)
+
+    monkeypatch.setattr(server, "send_all", spy_send_all)
+
+    async def scenario(url):
+        async with connect(url) as websocket:
+            await ask_once(websocket)
+            await receive(websocket, 2)
+        # Closed while thinking. Let the answer finish, then give the loop time to act.
+        slow_backend.release()
+        await asyncio.sleep(0.2)
+
+    run_against_server(scenario)
+
+    # The answer task was cancelled with the connection: nobody is left to tell.
+    assert protocol.TRANSCRIPT not in sent
+    assert protocol.REPLY not in sent
+
+
+def test_a_bug_inside_the_answer_is_reported(slow_backend, monkeypatch, capsys):
+    def broken_finish(self, transcript, reply):
+        raise RuntimeError("bug in finish")
+
+    monkeypatch.setattr(server.Session, "finish", broken_finish)
+
+    async def scenario(url):
+        async with connect(url) as websocket:
+            await ask_once(websocket)
+            await receive(websocket, 2)
+            slow_backend.release()
+            await asyncio.sleep(0.2)
+
+    run_against_server(scenario)
+
+    # A server bug must leave a traceback, not vanish inside a task nobody awaits.
+    assert "RuntimeError: bug in finish" in capsys.readouterr().err
