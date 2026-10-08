@@ -107,7 +107,10 @@ The satellite may start streaming right after sending `start`; it does not need
 to wait for `listening`, because messages on one connection arrive in order.
 
 Frames that were already in flight when `stop` was sent are expected and
-silently ignored, as are any frames sent while no question is running.
+silently ignored, as are any frames sent while the server is working on the
+answer or while no question is running. The server keeps reading during that
+time, so a `start` sent before the `reply` is answered with `busy` at once; it
+does not start a second question after the first one ends.
 
 Start and end of speech are decided on the server (200 ms of sound starts it,
 500 ms of silence ends it, 10 s maximum), so the satellite only needs a button
