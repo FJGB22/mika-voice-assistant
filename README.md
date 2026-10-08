@@ -274,6 +274,17 @@ directly, they would freeze the event loop, pings would go unanswered, and the
 connection would be dropped during a slow answer. `asyncio.to_thread` keeps the
 loop free.
 
+**The server keeps listening while it answers.** Each answer runs as its own
+task, so the connection loop goes on reading instead of waiting for it. A
+`start` that arrives meanwhile is answered with `busy` right away, and audio
+sent meanwhile is dropped. If the loop waited instead, those messages would
+queue up and be read after the reply, and speech meant for nobody would become
+a second question. When the satellite disconnects, its unfinished answer is
+cancelled rather than sent to a closed connection. Tasks are kept in a set
+until they finish, because asyncio holds them only weakly, and a callback
+prints the traceback of any task that crashes, so a bug inside an answer is
+never silent.
+
 **One session and one history per connection.** A reconnect starts a fresh
 conversation, and two satellites never see each other's history.
 
