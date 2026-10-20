@@ -75,7 +75,8 @@ extra fields are ignored.
 | `{"type": "stop", "reason": "speech_end"}` | The speaker finished. Stop streaming and wait for the answer. |
 | `{"type": "stop", "reason": "no_speech"}` | Nobody spoke within 3 s. Stop streaming; the turn is over. |
 | `{"type": "transcript", "text": "..."}` | What the server heard. |
-| `{"type": "reply", "text": "..."}` | Mika's answer. The turn is over. |
+| `{"type": "reply", "text": "..."}` | Mika's answer as text. Her voice follows as audio frames (see "Mika's voice" below). |
+| `{"type": "done"}` | The last audio frame of the answer has been sent. The turn is over once the satellite has played what it holds. |
 | `{"type": "error", "code": "..."}` | Something went wrong (codes below). |
 
 Error codes:
@@ -87,6 +88,7 @@ Error codes:
 | `bad_frame` | an audio frame that is not 640 bytes | yes |
 | `empty_transcript` | speech was detected but nothing was recognised | yes |
 | `server_error` | transcription or the language model failed | yes |
+| `tts_error` | the reply text was sent, but making Mika's voice failed (no frames, no `done`) | yes |
 
 ## One question, step by step
 
@@ -100,7 +102,12 @@ satellite                                server
     | <-- {"type":"stop","reason":"speech_end"} |
     |   (stop streaming)                     |   transcribe + ask
     | <-- {"type":"transcript","text":...} - |
-    | <-- {"type":"reply","text":...} ------ |
+    | <-- {"type":"reply","text":...} ------ |   make the voice (about 1.5 s)
+    | <== 640-byte frame =================== |   10 frames at once,
+    | <== 640-byte frame =================== |   then one every 20 ms
+    |            ...                         |
+    | <-- {"type":"done"} ------------------ |
+    |   (play what is left, then idle)       |
 ```
 
 The satellite may start streaming right after sending `start`; it does not need
@@ -108,19 +115,44 @@ to wait for `listening`, because messages on one connection arrive in order.
 
 Frames that were already in flight when `stop` was sent are expected and
 silently ignored, as are any frames sent while the server is working on the
-answer or while no question is running. The server keeps reading during that
-time, so a `start` sent before the `reply` is answered with `busy` at once; it
-does not start a second question after the first one ends.
+answer, while Mika is speaking, or while no question is running. The server keeps
+reading during that time, so a `start` sent before `done` (or a turn-ending
+error) is answered with `busy` at once; it does not start a second question after
+the first one ends.
 
 Start and end of speech are decided on the server (200 ms of sound starts it,
 500 ms of silence ends it, 10 s maximum), so the satellite only needs a button
 and a microphone.
 
+## Mika's voice (server → satellite)
+
+After `reply`, the server sends Mika's spoken answer as binary messages in
+**exactly the same format as the microphone frames**: 640 bytes, 16 kHz, mono,
+signed 16-bit little-endian, 20 ms each. The last frame is padded with zeros
+(silence), so every frame is full. `done` follows the last frame.
+
+Pacing:
+
+- The first **10 frames (200 ms) are sent at once**, so the satellite has some
+  audio in hand before playing; a short Wi-Fi hiccup then does not cut Mika off.
+- After that, **one frame every 20 ms**, the pace they are played at. The server
+  never runs ahead, so the satellite never needs to hold a whole answer (10 s of
+  audio would be 320 KB).
+
+What the satellite does:
+
+- Keep a small queue of frames, at least 16 (about 10 KB), and play from it
+  through I2S as frames arrive.
+- **Turn the microphone (and later the wake word) off while speaking**, or Mika's
+  own voice from the speaker could trigger a new question.
+- On `done`, play what is still queued, then go back to idle.
+- On `tts_error`, there is no speech: show the error briefly and go idle.
+
 ## Satellite state and the status LED
 
 There is no separate "state" message. The satellite follows the messages it
-already receives and keeps its own state (IDLE, LISTENING, THINKING), which is
-also what the status LED shows:
+already receives and keeps its own state (IDLE, LISTENING, THINKING, SPEAKING),
+which is also what the status LED shows:
 
 | Received | Satellite state | LED |
 |---|---|---|
@@ -128,8 +160,9 @@ also what the status LED shows:
 | `listening` | LISTENING: stream frames | listening |
 | `stop` with `speech_end` | THINKING: stop streaming, wait | thinking |
 | `stop` with `no_speech` | IDLE | off / idle |
-| `reply` | IDLE | off / idle |
-| `error` that ends the turn (`bad_frame`, `empty_transcript`, `server_error`) | IDLE | error, briefly |
+| `reply` | SPEAKING: mic off, play frames as they come | speaking |
+| `done` | IDLE once the queue has been played | off / idle |
+| `error` that ends the turn (`bad_frame`, `empty_transcript`, `server_error`, `tts_error`) | IDLE | error, briefly |
 | `error` with `busy` or `bad_message` | unchanged | unchanged |
 | connection lost | IDLE, then reconnect | error until reconnected |
 
@@ -143,10 +176,13 @@ change the state or the LED. That is what the "Turn over?" column above means.
 - Server discovery: mDNS, name `mika.local`, service `_mika._tcp`; the LAN IP
   as a fallback where multicast is blocked.
 - Server location: the laptop for now; where it runs later is still open.
+- The satellite has a speaker, so the server sends Mika's voice back as audio
+  frames (see "Mika's voice").
 
 ## Open questions for the group
 
 - WebSocket itself is still a proposal: the firmware side has to agree before
   this protocol is final.
-- Does the satellite have a speaker? If yes, a later version can send Mika's
-  voice back as audio frames in the same format.
+- Is a 200 ms head start and one frame per 20 ms right for the firmware's
+  buffer and I2S output? The numbers are constants on the server
+  (`PREBUFFER_FRAMES` in `server.py`) and easy to change.

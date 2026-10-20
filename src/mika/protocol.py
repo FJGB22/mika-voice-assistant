@@ -17,6 +17,7 @@ LISTENING = "listening"
 STOP = "stop"
 TRANSCRIPT = "transcript"
 REPLY = "reply"
+DONE = "done"  # after the last frame of Mika's speech: the turn is over
 ERROR = "error"
 
 # Reasons carried by STOP
@@ -29,6 +30,7 @@ BAD_FRAME = "bad_frame"
 BAD_MESSAGE = "bad_message"
 EMPTY_TRANSCRIPT = "empty_transcript"
 SERVER_ERROR = "server_error"
+TTS_ERROR = "tts_error"
 
 
 def decode_frame(data):

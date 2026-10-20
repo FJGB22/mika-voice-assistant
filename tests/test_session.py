@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from mika import protocol
-from mika.session import IDLE, LISTENING, THINKING, Session
+from mika.session import IDLE, LISTENING, SPEAKING, THINKING, Session
 from mika.vad import END_FRAMES, FRAME_SAMPLES, MAX_WAIT_FRAMES, START_FRAMES
 
 LOUD = np.full(FRAME_SAMPLES, 3000, dtype="<i2").tobytes()  # about -21 dB, like speech
@@ -14,6 +14,7 @@ START = json.dumps({"type": protocol.START})
 LISTENING_MSG = {"type": protocol.LISTENING}
 SPEECH_END_MSG = {"type": protocol.STOP, "reason": protocol.SPEECH_END}
 NO_SPEECH_MSG = {"type": protocol.STOP, "reason": protocol.NO_SPEECH}
+DONE_MSG = {"type": protocol.DONE}
 
 
 def error(code):
@@ -37,6 +38,13 @@ def thinking_session():
     session = listening_session()
     feed(session, LOUD, START_FRAMES)
     feed(session, QUIET, END_FRAMES)
+    return session
+
+
+def speaking_session():
+    session = thinking_session()
+    session.take_utterance()
+    session.finish("what time is it", "It is noon.")
     return session
 
 
@@ -169,7 +177,7 @@ def test_bad_control_message_is_reported_and_state_kept(text):
     assert session.state == LISTENING
 
 
-def test_finish_sends_transcript_then_reply_and_goes_idle():
+def test_finish_sends_transcript_then_reply_and_starts_speaking():
     session = thinking_session()
     session.take_utterance()
 
@@ -179,6 +187,42 @@ def test_finish_sends_transcript_then_reply_and_goes_idle():
         {"type": protocol.TRANSCRIPT, "text": "what time is it"},
         {"type": protocol.REPLY, "text": "It is noon."},
     ]
+    # Not idle yet: the reply still has to be spoken.
+    assert session.state == SPEAKING
+
+
+def test_finish_speaking_sends_done_and_goes_idle():
+    session = speaking_session()
+
+    messages = session.finish_speaking()
+
+    assert messages == [DONE_MSG]
+    assert session.state == IDLE
+
+
+def test_start_while_speaking_is_busy():
+    # The satellite's mic would hear Mika's own voice: no new question until done.
+    session = speaking_session()
+
+    messages = session.handle_text(START)
+
+    assert messages == [error(protocol.BUSY)]
+    assert session.state == SPEAKING
+
+
+def test_audio_while_speaking_is_ignored():
+    session = speaking_session()
+
+    assert feed(session, LOUD, 5) == []
+    assert session.state == SPEAKING
+
+
+def test_fail_while_speaking_sends_error_and_goes_idle():
+    session = speaking_session()
+
+    messages = session.fail(protocol.TTS_ERROR)
+
+    assert messages == [error(protocol.TTS_ERROR)]
     assert session.state == IDLE
 
 
@@ -198,10 +242,22 @@ def test_finish_outside_thinking_raises(make):
         make().finish("a", "b")
 
 
+def test_finish_twice_raises():
+    # A second finish would send the reply again and restart the speech.
+    with pytest.raises(RuntimeError):
+        speaking_session().finish("a", "b")
+
+
 @pytest.mark.parametrize("make", [Session, listening_session])
-def test_fail_outside_thinking_raises(make):
+def test_fail_outside_thinking_or_speaking_raises(make):
     with pytest.raises(RuntimeError):
         make().fail(protocol.SERVER_ERROR)
+
+
+@pytest.mark.parametrize("make", [Session, listening_session, thinking_session])
+def test_finish_speaking_outside_speaking_raises(make):
+    with pytest.raises(RuntimeError):
+        make().finish_speaking()
 
 
 def test_second_question_does_not_contain_the_first():
@@ -209,6 +265,7 @@ def test_second_question_does_not_contain_the_first():
     session = thinking_session()
     session.take_utterance()
     session.finish("first", "one")
+    session.finish_speaking()
 
     session.handle_text(START)
     feed(session, LOUD, START_FRAMES)
@@ -216,6 +273,13 @@ def test_second_question_does_not_contain_the_first():
     audio = session.take_utterance()
 
     assert audio.shape == ((START_FRAMES + END_FRAMES) * FRAME_SAMPLES, 1)
+
+
+def test_can_start_again_after_speaking():
+    session = speaking_session()
+    session.finish_speaking()
+
+    assert session.handle_text(START) == [LISTENING_MSG]
 
 
 def test_can_start_again_after_no_speech():

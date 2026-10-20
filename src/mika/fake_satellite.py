@@ -1,4 +1,5 @@
-"""Stands in for the ESP32: same protocol, audio from the laptop mic or a WAV file.
+"""Stands in for the ESP32: same protocol, audio from the laptop mic or a WAV file,
+and Mika's spoken reply played through the laptop speakers.
 
 Run the server first, then:
     python -m mika.fake_satellite                 # talk into the laptop mic
@@ -11,6 +12,7 @@ import json
 import time
 import wave
 
+import numpy as np
 import sounddevice as sd
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
@@ -90,12 +92,43 @@ def stream_until_stop(websocket, frames):
         frames.close()
 
 
-def wait_for_answer(websocket):
-    while True:
-        message = receive(websocket)
-        print(f"<- {message}")
-        if message["type"] == protocol.REPLY or is_turn_ending_error(message):
-            return
+def wait_for_answer(websocket, stopped_at):
+    # Played as the frames arrive, like the ESP32 will: collecting them all first
+    # would hide a server that sends too slowly or too fast.
+    speaker = None
+    frames = 0
+    underflows = 0
+    try:
+        while True:
+            message = websocket.recv()
+            if isinstance(message, bytes):
+                if speaker is None:
+                    # The number that matters to a user: silence after they stop talking.
+                    waited = time.perf_counter() - stopped_at
+                    print(f"First audio {waited:.2f} s after the server's stop")
+                    speaker = sd.OutputStream(
+                        samplerate=SAMPLE_RATE,
+                        channels=CHANNELS,
+                        dtype="int16",
+                        blocksize=FRAME_SAMPLES,
+                    )
+                    speaker.start()
+                samples = np.frombuffer(message, dtype="<i2").reshape(-1, CHANNELS)
+                # True when the speaker ran dry before this frame came: a gap in the voice.
+                underflows += speaker.write(samples)
+                frames += 1
+                continue
+
+            message = json.loads(message)
+            print(f"<- {message}")
+            if message["type"] == protocol.DONE or is_turn_ending_error(message):
+                return
+    finally:
+        if speaker is not None:
+            speaker.stop()  # waits until what is buffered has been played
+            speaker.close()
+            seconds = frames * FRAME_MS / 1000
+            print(f"Played {frames} frames ({seconds:.1f} s), gaps: {underflows}")
 
 
 def main():
@@ -125,7 +158,7 @@ def main():
                     frames = wav_frames(args.wav) if args.wav else mic_frames()
                     ended = stream_until_stop(websocket, frames)
                     if ended.get("reason") == protocol.SPEECH_END:
-                        wait_for_answer(websocket)
+                        wait_for_answer(websocket, stopped_at=time.perf_counter())
             except KeyboardInterrupt:
                 print("\nBye.")
     except KeyboardInterrupt:
