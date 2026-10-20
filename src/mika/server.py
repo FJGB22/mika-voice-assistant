@@ -1,4 +1,5 @@
 import asyncio
+import time
 import traceback
 
 from websockets.asyncio.server import serve
@@ -79,12 +80,14 @@ async def answer(websocket, session, audio, history, client, whisper, voice):
 
 
 async def speak_reply(websocket, session, voice, reply):
+    start = time.perf_counter()
     try:
         speech = await synthesize(voice, reply)
     except Exception as err:
         print(f"Failed to synthesize speech: {err!r}")
         await send_all(websocket, session.fail(protocol.TTS_ERROR))
         return
+    print(f"Speech time: {time.perf_counter() - start:.2f} seconds")
     await send_speech(websocket, protocol.split_frames(speech))
     await send_all(websocket, session.finish_speaking())
 

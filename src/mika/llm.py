@@ -1,3 +1,5 @@
+import time
+
 from google import genai
 
 MODEL = "gemini-3.5-flash-lite"
@@ -10,6 +12,7 @@ Do not offer further assistance at the end of your replies."""
 
 
 def ask(history, client):
+    start = time.perf_counter()
     stream = client.interactions.create(
         model=MODEL,
         input=to_gemini_input(history),
@@ -21,18 +24,38 @@ def ask(history, client):
     )
 
     parts = []
+    # Two moments tell different stories: the first event of any kind is Gemini
+    # answering at all (network), the first text is the model starting to write.
+    first_event = None
+    first_text = None
 
     for part in stream:
+        if first_event is None:
+            first_event = time.perf_counter() - start
         if part.event_type != "step.delta":
             continue
         if part.delta.type != "text":
             continue
 
+        if first_text is None:
+            first_text = time.perf_counter() - start
         print(part.delta.text, end="", flush=True)
         parts.append(part.delta.text)
 
     print()
+    print(f"Gemini time: {timings(first_event, first_text, time.perf_counter() - start)}")
     return "".join(parts)
+
+
+def timings(first_event, first_text, done):
+    def seconds(value):
+        return "none" if value is None else f"{value:.2f} s"
+
+    return (
+        f"first event {seconds(first_event)}, "
+        f"first text {seconds(first_text)}, "
+        f"done {seconds(done)}"
+    )
 
 
 def to_gemini_input(messages):
