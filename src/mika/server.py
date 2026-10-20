@@ -10,7 +10,7 @@ from mika.discovery import announce
 from mika.llm import ask, make_client
 from mika.session import THINKING, Session
 from mika.stt import load_whisper, transcribe
-from mika.tts import load_voice, synthesize  # noqa: F401  (TODO: speak_reply uses it)
+from mika.tts import load_voice, synthesize
 from mika.vad import FRAME_MS
 
 HOST = "0.0.0.0"  # every network interface, so an ESP32 on the same Wi-Fi can connect
@@ -41,24 +41,21 @@ async def send_all(websocket, messages):
 
 
 def frame_schedule(count):
-    # TODO (5B): when to send each of `count` frames, in seconds after the first.
-    #   - frames 0 .. PREBUFFER_FRAMES-1: 0 (all at once)
-    #   - after that one FRAME_SECONDS apart: frame PREBUFFER_FRAMES at 0.02,
-    #     the next at 0.04, ...
-    #   - one formula covers both: max(0, i - PREBUFFER_FRAMES + 1) * FRAME_SECONDS
-    #   - return a list with one number per frame (count 0: [])
-    raise NotImplementedError
+    # Seconds after the first frame at which each frame is sent: the prebuffer at
+    # once, then one frame per 20 ms, the pace the satellite plays them at.
+    return [max(0, i - PREBUFFER_FRAMES + 1) * FRAME_SECONDS for i in range(count)]
 
 
 async def send_speech(websocket, frames):
-    # TODO (5B): send every frame at its time from frame_schedule.
-    #   - loop = asyncio.get_running_loop(); start = loop.time() once, before the loop
-    #   - for frame, offset in zip(frames, frame_schedule(len(frames)), strict=True):
-    #   - wait until start + offset: delay = start + offset - loop.time(), and only
-    #     if delay > 0: await asyncio.sleep(delay)
-    #   - then: await websocket.send(frame)
-    #   Measure from start, not "sleep 20 ms each time" (see the drift test).
-    raise NotImplementedError
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    for frame, offset in zip(frames, frame_schedule(len(frames)), strict=True):
+        # Measured from start, not "sleep 20 ms each time": every sleep and send
+        # overruns a little, and that error would add up over a long reply.
+        delay = start + offset - loop.time()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        await websocket.send(frame)
 
 
 async def answer(websocket, session, audio, history, client, whisper, voice):
@@ -82,13 +79,14 @@ async def answer(websocket, session, audio, history, client, whisper, voice):
 
 
 async def speak_reply(websocket, session, voice, reply):
-    # TODO (5B): make Mika's voice and send it, then end the turn.
-    #   - speech = await synthesize(voice, reply), inside try/except Exception:
-    #     on failure print the error, send session.fail(protocol.TTS_ERROR)
-    #     with send_all, and return
-    #   - await send_speech(websocket, protocol.split_frames(speech))
-    #   - then send_all(websocket, session.finish_speaking())
-    raise NotImplementedError
+    try:
+        speech = await synthesize(voice, reply)
+    except Exception as err:
+        print(f"Failed to synthesize speech: {err!r}")
+        await send_all(websocket, session.fail(protocol.TTS_ERROR))
+        return
+    await send_speech(websocket, protocol.split_frames(speech))
+    await send_all(websocket, session.finish_speaking())
 
 
 def report_crash(task):

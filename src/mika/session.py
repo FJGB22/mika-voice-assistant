@@ -85,27 +85,23 @@ class Session:
     def finish(self, transcript, reply):
         if self.state != THINKING:
             raise RuntimeError("cannot finish outside THINKING")
-        # TODO (5B): not idle yet. Go to SPEAKING instead of resetting: the reply is
-        #   still to be spoken, and a start meanwhile must get busy. The messages
-        #   returned stay exactly the same.
-        self._reset()
+        # Not idle yet: the reply is still to be spoken, and a start meanwhile is busy.
+        self.state = SPEAKING
         return [
             {"type": protocol.TRANSCRIPT, "text": transcript},
             {"type": protocol.REPLY, "text": reply},
         ]
 
     def finish_speaking(self):
-        # TODO (5B): the last frame has been sent; the turn is over.
-        #   - outside SPEAKING: raise RuntimeError, like finish and fail do
-        #   - back to the start with self._reset()
-        #   - return the done message in a list: [{"type": protocol.DONE}]
-        raise NotImplementedError
+        if self.state != SPEAKING:
+            raise RuntimeError("cannot finish speaking outside SPEAKING")
+        self._reset()
+        return [{"type": protocol.DONE}]
 
     def fail(self, code):
-        # TODO (5B): allow SPEAKING too: the reply text is out, but making the speech
-        #   can still fail (tts_error). Hint: `not in (THINKING, SPEAKING)`.
-        if self.state != THINKING:
-            raise RuntimeError("cannot fail outside THINKING")
+        # SPEAKING too: the reply text is out, but making or sending the speech can fail.
+        if self.state not in (THINKING, SPEAKING):
+            raise RuntimeError("cannot fail outside THINKING or SPEAKING")
         self._reset()
         return [error_message(code)]
 
