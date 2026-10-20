@@ -6,22 +6,23 @@ A small voice-assistant project, built one stage at a time. It runs in two ways:
   talking, transcribes locally with faster-whisper, streams the answer from
   Gemini, and remembers the conversation.
 - **As a server for a satellite** (`python -m mika.server`): a small device
-  (an ESP32-S3 with a microphone) streams audio over WebSocket on the local
-  network; the server detects the end of speech, transcribes, asks Gemini, and
-  sends the text back. The server announces itself as `mika.local` (mDNS), so
-  the device finds it without a hard-coded IP address. Until the firmware is
-  ready, `fake_satellite` plays the device's part from the laptop.
+  (an ESP32-S3 with a microphone and a speaker) streams audio over WebSocket on
+  the local network; the server detects the end of speech, transcribes, asks
+  Gemini, and sends back the answer as text and as Mika's voice, which the device
+  plays. The server announces itself as `mika.local` (mDNS), so the device finds
+  it without a hard-coded IP address. Until the firmware is ready,
+  `fake_satellite` plays the device's part from the laptop, speakers included.
 
-Mika can also speak (`python -m mika.tts`), in the same voice as the Mika
-VTuber. Later stages send that speech to the satellite and add a wake word and
-real-time data such as weather and time.
+Mika speaks in the same voice as the Mika VTuber (`python -m mika.tts` tries
+the voice on its own). Later stages add a wake word and real-time data such as
+weather and time.
 
 ## Requirements
 
 - Python 3.11 or newer
 - A Gemini API key from [aistudio.google.com](https://aistudio.google.com)
-- For speech output: [ffmpeg](https://ffmpeg.org) on PATH (on Windows:
-  `winget install Gyan.FFmpeg`, then open a new terminal)
+- [ffmpeg](https://ffmpeg.org) on PATH, for Mika's voice in `mika.tts` and the
+  server (on Windows: `winget install Gyan.FFmpeg`, then open a new terminal)
 
 Use a separate Google Cloud project for this key. Free-tier quota is counted
 per project, not per key, so sharing a project with another app means sharing
@@ -44,7 +45,7 @@ The extras keep installs small where a part is not needed:
 | `audio` | sounddevice, numpy | the laptop mic: `mika` and `fake_satellite` |
 | `whisper` | faster-whisper | transcription: `mika`, the server |
 | `net` | websockets, numpy, zeroconf | the server, `fake_satellite`, and `mika.discovery` |
-| `tts` | edge-tts, numpy | speech output: `mika.tts` |
+| `tts` | edge-tts, numpy | Mika's voice: `mika.tts` and the server |
 | `dev` | pytest, ruff | tests and linting (the tests also need `whisper` and `net`) |
 
 faster-whisper is a large download, so the first install takes a few minutes.
@@ -164,8 +165,21 @@ whole path (end-of-speech detection, Whisper, Gemini) runs without anyone
 speaking. Each Enter replays the file from the start.
 
 For one question the satellite should print, in order: `listening`, `stop`
-(`speech_end`), `transcript`, `reply`. Pressing Enter and staying silent ends
-with `stop` (`no_speech`).
+(`speech_end`), `transcript`, `reply`, then play Mika's answer through the
+laptop speakers and print `done`. Pressing Enter and staying silent ends with
+`stop` (`no_speech`).
+
+While the answer plays, `fake_satellite` prints two numbers, for example:
+
+```
+First audio 3.8 s after the server's stop
+Played 205 frames (4.1 s), gaps: 0
+```
+
+- **First audio** is the silence a user sits through after they stop talking:
+  Whisper, Gemini and Edge together.
+- **gaps** counts the times the speaker ran dry before the next frame arrived,
+  heard as a stutter. It should be 0.
 
 Without a URL, `fake_satellite` connects to `localhost`. To go through the name
 the ESP32 uses, pass it explicitly:
@@ -309,6 +323,22 @@ until they finish, because asyncio holds them only weakly, and a callback
 prints the traceback of any task that crashes, so a bug inside an answer is
 never silent.
 
+**Speech is paced, not sent at once.** A 10 s answer is 500 frames, 320 KB,
+and the ESP32-S3 has 512 KB of RAM for everything. So the server sends the
+first 10 frames (200 ms) at once, which gives the device some audio in hand
+against Wi-Fi hiccups, and then one frame every 20 ms, the pace it plays them
+at. Each frame waits until its time measured from the start, not a fixed 20 ms
+after the previous one: every sleep overruns a little, and with fixed sleeps
+those overruns would add up over a long answer. `PREBUFFER_FRAMES` sets the
+head start and has to suit the firmware's buffer.
+
+**The answer is over at `done`, not at `reply`.** The reply text goes out
+first, so the satellite knows the answer while the voice is still being made;
+the turn ends after the last frame. Until then a `start` gets `busy` and audio
+from the satellite is dropped, because its microphone would hear Mika's own
+voice from the speaker. If making the voice fails, the text has already arrived
+and the turn ends with `tts_error` instead of `done`.
+
 **One session and one history per connection.** A reconnect starts a fresh
 conversation, and two satellites never see each other's history.
 
@@ -386,7 +416,7 @@ mika/
 │  ├─ server.py          # WebSocket server: one Session per connection
 │  ├─ discovery.py       # mDNS: announce as mika.local, find a running server
 │  ├─ tts.py             # Edge TTS -> ffmpeg -> 16 kHz audio in the microphone's format
-│  └─ fake_satellite.py  # stands in for the ESP32: laptop mic or a WAV file
+│  └─ fake_satellite.py  # stands in for the ESP32: mic or WAV in, laptop speakers out
 ├─ tests/
 │  ├─ test_config.py
 │  ├─ test_llm.py

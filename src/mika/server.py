@@ -10,9 +10,16 @@ from mika.discovery import announce
 from mika.llm import ask, make_client
 from mika.session import THINKING, Session
 from mika.stt import load_whisper, transcribe
+from mika.tts import load_voice, synthesize
+from mika.vad import FRAME_MS
 
 HOST = "0.0.0.0"  # every network interface, so an ESP32 on the same Wi-Fi can connect
 PORT = 8765
+
+FRAME_SECONDS = FRAME_MS / 1000
+# Sent at once before pacing starts: the satellite holds 200 ms in hand, so a short
+# Wi-Fi hiccup does not cut Mika off mid-word.
+PREBUFFER_FRAMES = 10
 
 
 # Called by plain name, not stt.transcribe or llm.ask, so the tests can monkeypatch them.
@@ -33,7 +40,25 @@ async def send_all(websocket, messages):
         await websocket.send(protocol.encode_message(message))
 
 
-async def answer(websocket, session, audio, history, client, whisper):
+def frame_schedule(count):
+    # Seconds after the first frame at which each frame is sent: the prebuffer at
+    # once, then one frame per 20 ms, the pace the satellite plays them at.
+    return [max(0, i - PREBUFFER_FRAMES + 1) * FRAME_SECONDS for i in range(count)]
+
+
+async def send_speech(websocket, frames):
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    for frame, offset in zip(frames, frame_schedule(len(frames)), strict=True):
+        # Measured from start, not "sleep 20 ms each time": every sleep and send
+        # overruns a little, and that error would add up over a long reply.
+        delay = start + offset - loop.time()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        await websocket.send(frame)
+
+
+async def answer(websocket, session, audio, history, client, whisper, voice):
     try:
         # Whisper and Gemini block for seconds; in a thread the event loop keeps
         # answering pings, so the connection is not dropped.
@@ -42,13 +67,26 @@ async def answer(websocket, session, audio, history, client, whisper):
         )
     except Exception as err:
         print(f"Question failed: {err!r}")
-        messages = session.fail(protocol.SERVER_ERROR)
-    else:
-        if reply is None:
-            messages = session.fail(protocol.EMPTY_TRANSCRIPT)
-        else:
-            messages = session.finish(transcript, reply)
-    await send_all(websocket, messages)
+        await send_all(websocket, session.fail(protocol.SERVER_ERROR))
+        return
+    if reply is None:
+        await send_all(websocket, session.fail(protocol.EMPTY_TRANSCRIPT))
+        return
+
+    # The text first: the satellite learns the answer while the speech is made.
+    await send_all(websocket, session.finish(transcript, reply))
+    await speak_reply(websocket, session, voice, reply)
+
+
+async def speak_reply(websocket, session, voice, reply):
+    try:
+        speech = await synthesize(voice, reply)
+    except Exception as err:
+        print(f"Failed to synthesize speech: {err!r}")
+        await send_all(websocket, session.fail(protocol.TTS_ERROR))
+        return
+    await send_speech(websocket, protocol.split_frames(speech))
+    await send_all(websocket, session.finish_speaking())
 
 
 def report_crash(task):
@@ -66,19 +104,19 @@ def report_crash(task):
     traceback.print_exception(err)
 
 
-def start_answer(answering, websocket, session, history, client, whisper):
+def start_answer(answering, websocket, session, history, client, whisper, voice):
     # Called from the loop, not the task: a RuntimeError from take_utterance is a server
     # bug and should crash loudly, not reach the satellite as a server_error.
     audio = session.take_utterance()
     # A task, not an await: the loop keeps reading, so a start that arrives meanwhile
     # gets busy and stray frames are dropped by Session.
-    task = asyncio.create_task(answer(websocket, session, audio, history, client, whisper))
+    task = asyncio.create_task(answer(websocket, session, audio, history, client, whisper, voice))
     answering.add(task)
     task.add_done_callback(answering.discard)
     task.add_done_callback(report_crash)
 
 
-def make_handler(client, whisper):
+def make_handler(client, whisper, voice):
     async def handler(websocket):
         # Created per connection: a reconnect starts a fresh session and conversation.
         session = Session()
@@ -99,7 +137,7 @@ def make_handler(client, whisper):
                 # Only on the step into THINKING: while a question is answered, every
                 # later message also sees THINKING and must not start a second answer.
                 if session.state == THINKING and not was_thinking:
-                    start_answer(answering, websocket, session, history, client, whisper)
+                    start_answer(answering, websocket, session, history, client, whisper, voice)
         except ConnectionClosedError:
             # How a satellite that loses power or Wi-Fi ends: normal for a device, so one
             # line instead of a "connection handler failed" traceback.
@@ -116,9 +154,9 @@ def make_handler(client, whisper):
     return handler
 
 
-async def run(client, whisper):
+async def run(client, whisper, voice):
     # Raw PCM barely compresses, so deflate would only cost CPU on both ends.
-    async with serve(make_handler(client, whisper), HOST, PORT, compression=None) as server:
+    async with serve(make_handler(client, whisper, voice), HOST, PORT, compression=None) as server:
         print(f"Listening on ws://{HOST}:{PORT}")
         async with announce(PORT):
             await server.serve_forever()
@@ -136,11 +174,18 @@ def main():
         print(f"Error: {LLM_API_KEY_NAME} is not set.")
         return
 
+    # Before Whisper, which takes a while to load: a missing ffmpeg is reported at once.
+    try:
+        voice = load_voice()
+    except FileNotFoundError as err:
+        print(f"Error: {err}")
+        return
+
     client = make_client(llm_api_key)
     whisper = load_whisper()
 
     try:
-        asyncio.run(run(client, whisper))
+        asyncio.run(run(client, whisper, voice))
     except KeyboardInterrupt:
         print("\nServer stopped.")
 

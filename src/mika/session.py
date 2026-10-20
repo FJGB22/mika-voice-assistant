@@ -6,6 +6,7 @@ from mika.vad import DONE, NO_SPEECH, SpeechDetector
 IDLE = "idle"
 LISTENING = "listening"
 THINKING = "thinking"
+SPEAKING = "speaking"
 
 
 def stop_message(reason):
@@ -84,15 +85,23 @@ class Session:
     def finish(self, transcript, reply):
         if self.state != THINKING:
             raise RuntimeError("cannot finish outside THINKING")
-        self._reset()
+        # Not idle yet: the reply is still to be spoken, and a start meanwhile is busy.
+        self.state = SPEAKING
         return [
             {"type": protocol.TRANSCRIPT, "text": transcript},
             {"type": protocol.REPLY, "text": reply},
         ]
 
+    def finish_speaking(self):
+        if self.state != SPEAKING:
+            raise RuntimeError("cannot finish speaking outside SPEAKING")
+        self._reset()
+        return [{"type": protocol.DONE}]
+
     def fail(self, code):
-        if self.state != THINKING:
-            raise RuntimeError("cannot fail outside THINKING")
+        # SPEAKING too: the reply text is out, but making or sending the speech can fail.
+        if self.state not in (THINKING, SPEAKING):
+            raise RuntimeError("cannot fail outside THINKING or SPEAKING")
         self._reset()
         return [error_message(code)]
 
