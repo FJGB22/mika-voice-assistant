@@ -254,6 +254,16 @@ Recorded so they are not silently undone later.
 `to_gemini_input`, translates on the way out. Switching providers means
 rewriting that one function instead of every place history is touched.
 
+**Gemini is called through `generate_content`, not the Interactions API.**
+Logging each stage showed Mika silent for 10-15 s after a question, and most of
+it before Gemini sent anything. A side-by-side test on the same network
+(`curl` to the API: about 0.6 s to the first byte) put the first text at about
+1 s with `generate_content` and 4-6 s with Interactions; turning the model's
+thinking down changed nothing. The history is kept here anyway, so the
+server-side conversation state Interactions offers is not needed. Switching
+changed only `ask` and `to_gemini_input`, as the generic history intended.
+Automatic function calling is turned off: Mika gives Gemini no functions yet.
+
 **The API key variable is `LLM_API_KEY`, not `GEMINI_API_KEY`.** The name does
 not mention a vendor, so it survives a provider change. The trade-off: the
 Gemini SDK auto-detects only `GEMINI_API_KEY`, so the key is passed to the
