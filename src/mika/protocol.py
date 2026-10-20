@@ -42,6 +42,15 @@ def decode_frame(data):
     return samples.reshape((FRAME_SAMPLES, 1))
 
 
+def split_frames(audio):
+    # TODO: the opposite of decode_frame, for audio going to the satellite.
+    #   - accept (samples, 1) or 1-D int16: flatten with .reshape(-1)
+    #   - pad the end with zeros (silence) up to a whole number of FRAME_SAMPLES
+    #   - bytes in little-endian: .astype("<i2").tobytes()
+    #   - cut into FRAME_BYTES pieces and return them as a list (empty audio: [])
+    audio = audio.reshape(-1)
+    
+
 def parse_message(text):
     # JSONDecodeError is already a ValueError; converting it here keeps all three
     # rejections in one visible place for the reader.
