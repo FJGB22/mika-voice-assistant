@@ -43,13 +43,15 @@ def decode_frame(data):
 
 
 def split_frames(audio):
-    # TODO: the opposite of decode_frame, for audio going to the satellite.
-    #   - accept (samples, 1) or 1-D int16: flatten with .reshape(-1)
-    #   - pad the end with zeros (silence) up to a whole number of FRAME_SAMPLES
-    #   - bytes in little-endian: .astype("<i2").tobytes()
-    #   - cut into FRAME_BYTES pieces and return them as a list (empty audio: [])
     audio = audio.reshape(-1)
-    
+    # Padded in one step: np.append in a loop copies the whole array on every call.
+    padding = (-len(audio)) % FRAME_SAMPLES
+    audio = np.concatenate([audio, np.zeros(padding, dtype=audio.dtype)])
+    return [
+        audio[i : i + FRAME_SAMPLES].astype("<i2").tobytes()
+        for i in range(0, len(audio), FRAME_SAMPLES)
+    ]
+
 
 def parse_message(text):
     # JSONDecodeError is already a ValueError; converting it here keeps all three

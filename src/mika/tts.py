@@ -8,11 +8,11 @@ Try it on the laptop:
 import argparse
 import asyncio
 import shutil
-import subprocess  # noqa: F401  (TODO: remove once decode_mp3 uses it)
+import subprocess
 import time
 import wave
 
-import numpy as np  # noqa: F401  (TODO: remove once decode_mp3 uses it)
+import numpy as np
 
 from mika.vad import SAMPLE_RATE
 
@@ -41,33 +41,48 @@ def load_voice():
 
 
 async def fetch_mp3(voice, text):
-    # TODO: ask Edge to speak `text` and return the whole MP3 as one bytes object.
-    #   - voice is what load_voice() returns: call it like edge_tts.Communicate,
-    #     voice(text, VOICE, rate=RATE, pitch=PITCH)
-    #   - `async for chunk in communicate.stream():` gives dicts as they arrive
-    #   - keep only chunks whose "type" is "audio"; their bytes are in "data"
-    #   - join them in order: b"".join(parts)
-    raise NotImplementedError
+    communicate = voice(text, VOICE, rate=RATE, pitch=PITCH)
+    parts = []
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            parts.append(chunk["data"])
+    return b"".join(parts)
 
 
 def decode_mp3(mp3):
-    # TODO: turn MP3 bytes into (samples, 1) int16 audio at SAMPLE_RATE, with ffmpeg.
-    #   - empty mp3: return np.zeros((0, 1), dtype=np.int16) without running ffmpeg
-    #   - subprocess.run(["ffmpeg", ...], input=mp3, capture_output=True)
-    #   - ffmpeg reads from "pipe:0" (stdin) and writes to "pipe:1" (stdout);
-    #     "-hide_banner", "-loglevel", "error" keep its stderr to real errors only
-    #   - output options, before "pipe:1": raw 16-bit little-endian ("-f", "s16le"),
-    #     mono ("-ac", "1"), at our rate ("-ar", str(SAMPLE_RATE))
-    #   - returncode not 0: raise ValueError with ffmpeg's stderr in the message
-    #   - np.frombuffer(result.stdout, dtype="<i2"), then reshape to (-1, 1)
-    raise NotImplementedError
+    if len(mp3) == 0:
+        return np.zeros((0, 1), dtype=np.int16)
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            "pipe:0",
+            "-f",
+            "s16le",
+            "-ac",
+            "1",
+            "-ar",
+            str(SAMPLE_RATE),
+            "pipe:1",
+        ],
+        input=mp3,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        # errors="replace": on Windows ffmpeg may print non-UTF-8 bytes (e.g. folder names),
+        # and a UnicodeDecodeError here would hide the real error.
+        error = result.stderr.decode(errors="replace").strip()
+        raise ValueError(f"ffmpeg failed: {error}")
+    return np.frombuffer(result.stdout, dtype="<i2").reshape(-1, 1)
 
 
 async def synthesize(voice, text):
-    # TODO: fetch_mp3, then decode_mp3, and return the audio.
-    #   - fetch_mp3 is network I/O: await it directly
-    #   - decode_mp3 blocks while ffmpeg runs: await asyncio.to_thread(decode_mp3, mp3)
-    raise NotImplementedError
+    mp3 = await fetch_mp3(voice, text)
+    audio = await asyncio.to_thread(decode_mp3, mp3)
+    return audio
 
 
 def save_wav(path, audio):
