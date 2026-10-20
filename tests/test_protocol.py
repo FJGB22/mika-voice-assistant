@@ -77,3 +77,61 @@ def test_encode_message_is_json_text():
 
     assert isinstance(text, str)
     assert json.loads(text) == message
+
+
+# --- split_frames: audio to the satellite, the opposite of decode_frame ---
+
+
+def test_split_frames_gives_640_byte_frames():
+    audio = np.zeros((3 * FRAME_SAMPLES, 1), dtype=np.int16)
+
+    frames = protocol.split_frames(audio)
+
+    assert len(frames) == 3
+    assert all(len(frame) == protocol.FRAME_BYTES for frame in frames)
+
+
+def test_split_frames_pads_the_last_frame_with_silence():
+    audio = np.full((FRAME_SAMPLES + 5, 1), 7, dtype=np.int16)
+
+    frames = protocol.split_frames(audio)
+
+    # Two frames, not one and a short one: the firmware only accepts full frames.
+    assert len(frames) == 2
+    last = protocol.decode_frame(frames[1])[:, 0]
+    assert last[:5].tolist() == [7] * 5
+    assert not last[5:].any()
+
+
+def test_split_frames_round_trips_through_decode_frame():
+    audio = np.arange(-1000, 1000, dtype=np.int16).reshape(-1, 1)[: 3 * FRAME_SAMPLES]
+
+    frames = protocol.split_frames(audio)
+
+    decoded = np.concatenate([protocol.decode_frame(frame) for frame in frames])
+    assert np.array_equal(decoded, audio)
+
+
+def test_split_frames_writes_little_endian():
+    audio = np.zeros((FRAME_SAMPLES, 1), dtype=np.int16)
+    audio[0, 0] = 1
+    audio[1, 0] = -2
+
+    [frame] = protocol.split_frames(audio)
+
+    # Explicit byte order, as in decode_frame: the ESP32 reads little-endian.
+    assert frame[:4] == b"\x01\x00\xfe\xff"
+
+
+def test_split_frames_of_nothing_is_no_frames():
+    assert protocol.split_frames(np.zeros((0, 1), dtype=np.int16)) == []
+
+
+def test_split_frames_accepts_a_flat_array_too():
+    flat = np.ones(FRAME_SAMPLES, dtype=np.int16)
+
+    frames = protocol.split_frames(flat)
+
+    # len first: two functions that both return None would also be "equal".
+    assert len(frames) == 1
+    assert frames == protocol.split_frames(flat.reshape(-1, 1))

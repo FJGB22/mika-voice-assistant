@@ -12,13 +12,16 @@ A small voice-assistant project, built one stage at a time. It runs in two ways:
   the device finds it without a hard-coded IP address. Until the firmware is
   ready, `fake_satellite` plays the device's part from the laptop.
 
-Later stages add speech output (TTS), a wake word, and real-time data such as
-weather and time.
+Mika can also speak (`python -m mika.tts`), in the same voice as the Mika
+VTuber. Later stages send that speech to the satellite and add a wake word and
+real-time data such as weather and time.
 
 ## Requirements
 
 - Python 3.11 or newer
 - A Gemini API key from [aistudio.google.com](https://aistudio.google.com)
+- For speech output: [ffmpeg](https://ffmpeg.org) on PATH (on Windows:
+  `winget install Gyan.FFmpeg`, then open a new terminal)
 
 Use a separate Google Cloud project for this key. Free-tier quota is counted
 per project, not per key, so sharing a project with another app means sharing
@@ -31,7 +34,7 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # macOS / Linux
 
-pip install -e ".[dev,audio,whisper,net]"
+pip install -e ".[dev,audio,whisper,net,tts]"
 ```
 
 The extras keep installs small where a part is not needed:
@@ -41,6 +44,7 @@ The extras keep installs small where a part is not needed:
 | `audio` | sounddevice, numpy | the laptop mic: `mika` and `fake_satellite` |
 | `whisper` | faster-whisper | transcription: `mika`, the server |
 | `net` | websockets, numpy, zeroconf | the server, `fake_satellite`, and `mika.discovery` |
+| `tts` | edge-tts, numpy | speech output: `mika.tts` |
 | `dev` | pytest, ruff | tests and linting (the tests also need `whisper` and `net`) |
 
 faster-whisper is a large download, so the first install takes a few minutes.
@@ -94,6 +98,24 @@ If speech is never detected, your microphone may be quieter than the
 ```bash
 python -c "from mika.audio import meter; meter()"
 ```
+
+### Speech output
+
+```bash
+python -m mika.tts "Hello, I am Mika. How can I help you today?"
+python -m mika.tts "Hello, I am Mika." --wav mika.wav   # save instead of playing
+```
+
+It prints how long the speech is and how long it took to be ready, then plays it:
+
+```
+4.1 s of speech, ready after 1.56 s
+```
+
+That example was measured on home Wi-Fi in Jakarta. "Ready after" is almost all
+network time to Microsoft's servers: the wait before Mika can start talking.
+Without ffmpeg on PATH it stops at startup with a message saying so; without a
+network connection it fails with an error instead of hanging.
 
 ### As a server
 
@@ -182,10 +204,12 @@ pytest                      # tests
 Keep the linter output at zero. A standing warning trains you to ignore the
 output, and then the warnings that matter get lost in the noise.
 
-The tests need no microphone, no network access and no API key: Whisper and
-Gemini are replaced by fakes, the server tests talk to a real WebSocket on
+The tests need no microphone, no network access and no API key: Whisper,
+Gemini and Edge are replaced by fakes, the server tests talk to a real WebSocket on
 `localhost` with a port the OS picks, and the mDNS tests use a fake socket and a
-fake zeroconf, so nothing is ever announced on your network.
+fake zeroconf, so nothing is ever announced on your network. The TTS tests decode
+real MP3 that ffmpeg itself generates (a 440 Hz tone), so they check the actual
+conversion; without ffmpeg on PATH they are skipped, which pytest reports.
 
 ### Pre-commit hook
 
@@ -312,6 +336,34 @@ two minutes. On shutdown, including Ctrl-C and crashes, the server unregisters
 before closing the socket. Otherwise a satellite could keep trying the old
 address after the server moved to another network.
 
+**TTS output has the microphone's format.** `synthesize` always returns
+`(samples, 1)` int16 at 16 kHz, the same shape a recording has. The server, the
+protocol and the firmware never learn which TTS engine made it, and
+`split_frames` cuts it into the same 640-byte frames the satellite sends, padded
+with zeros (silence) so the last frame is full: any other value would make the
+speaker click.
+
+**One engine behind one function.** Only Edge TTS is implemented, with the same
+voice as the VTuber (`en-US-AnaNeural`, +18% rate, +8 Hz pitch) so both sound like
+one character. Edge is not an official Microsoft API and may change; replacing it
+means writing one function that returns the same shape. There is deliberately no
+provider switch until a second engine actually exists. edge-tts (LGPL-3.0) is an
+optional extra, imported inside `load_voice`, so the server and the tests run
+without it.
+
+**ffmpeg decodes and resamples in one step.** Edge always sends 24 kHz mono MP3.
+ffmpeg turns it into raw 16-bit little-endian PCM at 16 kHz through stdin and
+stdout, with no temporary files. Its resampler filters out frequencies the lower
+rate cannot hold, which a hand-written linear interpolation would not, so there is
+no resampling code of our own.
+
+**Waiting is awaited; blocking work runs in a thread.** Fetching from Edge is
+network I/O, so it is awaited and the event loop stays free meanwhile. ffmpeg
+blocks while it runs, so `decode_mp3` runs in `asyncio.to_thread`, for the same
+reason as Whisper and Gemini. edge-tts also offers `stream_sync()`, but when the
+connection fails it hangs forever: the error is raised in a worker thread and never
+reaches the caller. A satellite would then wait for an answer that never comes.
+
 **Language convention.** Code, comments and documentation in English. Commit
 messages are in Indonesian, using conventional prefixes (`feat:`, `fix:`,
 `refactor:`, `docs:`, `chore:`).
@@ -329,10 +381,11 @@ mika/
 │  ├─ audio.py           # microphone input until silence, level meter
 │  ├─ stt.py             # faster-whisper transcription
 │  ├─ vad.py             # frame size, loudness in dB, start/end-of-speech detection
-│  ├─ protocol.py        # wire format: frame decoding, JSON messages, constants
+│  ├─ protocol.py        # wire format: frames in and out, JSON messages, constants
 │  ├─ session.py         # protocol rules for one satellite, no networking
 │  ├─ server.py          # WebSocket server: one Session per connection
 │  ├─ discovery.py       # mDNS: announce as mika.local, find a running server
+│  ├─ tts.py             # Edge TTS -> ffmpeg -> 16 kHz audio in the microphone's format
 │  └─ fake_satellite.py  # stands in for the ESP32: laptop mic or a WAV file
 ├─ tests/
 │  ├─ test_config.py
@@ -342,7 +395,8 @@ mika/
 │  ├─ test_protocol.py
 │  ├─ test_session.py
 │  ├─ test_server.py
-│  └─ test_discovery.py
+│  ├─ test_discovery.py
+│  └─ test_tts.py
 ├─ docs/
 │  └─ protocol.md        # how a satellite talks to the server
 ├─ .env.example
@@ -352,4 +406,4 @@ mika/
 Each module has one reason to change: `protocol.py` when the contract with the
 firmware changes, `session.py` when the conversation rules change, `server.py`
 when the transport changes, `discovery.py` when the way satellites find the
-server changes.
+server changes, `tts.py` when the TTS engine changes.

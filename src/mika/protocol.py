@@ -42,6 +42,17 @@ def decode_frame(data):
     return samples.reshape((FRAME_SAMPLES, 1))
 
 
+def split_frames(audio):
+    audio = audio.reshape(-1)
+    # Padded in one step: np.append in a loop copies the whole array on every call.
+    padding = (-len(audio)) % FRAME_SAMPLES
+    audio = np.concatenate([audio, np.zeros(padding, dtype=audio.dtype)])
+    return [
+        audio[i : i + FRAME_SAMPLES].astype("<i2").tobytes()
+        for i in range(0, len(audio), FRAME_SAMPLES)
+    ]
+
+
 def parse_message(text):
     # JSONDecodeError is already a ValueError; converting it here keeps all three
     # rejections in one visible place for the reader.
