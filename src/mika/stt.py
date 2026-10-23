@@ -28,7 +28,7 @@ def transcribe(model, audio):
         beam_size=1,
         vad_filter=True,
         condition_on_previous_text=False,  # avoids repeated or looping text
-        # TODO (5D): pass hotwords=WHISPER_HOTWORDS, so Whisper expects "Mika".
+        hotwords=WHISPER_HOTWORDS,
     )
 
     # segments is a generator: transcription happens inside this loop,
