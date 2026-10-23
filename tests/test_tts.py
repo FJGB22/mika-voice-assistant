@@ -2,6 +2,8 @@ import asyncio
 import shutil
 import subprocess
 import threading
+import time
+from dataclasses import dataclass
 
 import numpy as np
 import pytest
@@ -177,7 +179,7 @@ def test_garbage_is_rejected_with_ffmpegs_reason():
         tts.decode_mp3(b"this is not an mp3 file at all" * 10)
 
 
-# --- synthesize: fetch, then decode ---
+# --- synthesize_edge: fetch, then decode ---
 
 
 @needs_ffmpeg
@@ -186,7 +188,7 @@ def test_synthesize_fetches_then_decodes():
     # Split as the network would deliver it.
     voice = fake_voice([audio(mp3[:1000]), boundary(), audio(mp3[1000:])])
 
-    out = asyncio.run(tts.synthesize(voice, "Hello there."))
+    out = asyncio.run(tts.synthesize_edge(voice, "Hello there."))
 
     assert FakeCommunicate.created[0]["text"] == "Hello there."
     assert out.shape[1] == 1
@@ -204,7 +206,7 @@ def test_decoding_runs_outside_the_event_loop(monkeypatch):
 
     async def run():
         loop_thread = threading.current_thread()
-        await tts.synthesize(fake_voice([audio(b"x")]), "Hi.")
+        await tts.synthesize_edge(fake_voice([audio(b"x")]), "Hi.")
         return loop_thread
 
     loop_thread = asyncio.run(run())
@@ -212,6 +214,212 @@ def test_decoding_runs_outside_the_event_loop(monkeypatch):
     # ffmpeg blocks; on the loop's own thread it would stall every connection on the
     # server, the same reason Whisper and Gemini run in asyncio.to_thread.
     assert threads and threads[0] is not loop_thread
+
+
+# --- synthesize_piper: a fake voice stands in for Piper ---
+
+
+@dataclass
+class FakeChunk:
+    """The fields of piper.AudioChunk that Mika reads."""
+
+    sample_rate: int
+    sample_width: int
+    sample_channels: int
+    audio_int16_array: np.ndarray
+
+
+def piper_chunk(values, rate=SAMPLE_RATE, width=2, channels=1):
+    return FakeChunk(rate, width, channels, np.array(values, dtype=np.int16))
+
+
+class FakePiper:
+    """Stands in for a loaded PiperVoice: one chunk per sentence, as Piper does."""
+
+    def __init__(self, chunks):
+        self.chunks = chunks
+        self.texts = []
+        self.threads = []
+
+    def synthesize(self, text):
+        self.texts.append(text)
+        self.threads.append(threading.current_thread())
+        yield from self.chunks
+
+
+def test_piper_gets_the_text():
+    piper = FakePiper([piper_chunk([1])])
+
+    tts.synthesize_piper(piper, "Hello there.")
+
+    assert piper.texts == ["Hello there."]
+
+
+def test_piper_sentences_are_joined_in_order():
+    piper = FakePiper([piper_chunk([1, 2]), piper_chunk([3]), piper_chunk([4, 5, 6])])
+
+    out = tts.synthesize_piper(piper, "One. Two. Three.")
+
+    assert out[:, 0].tolist() == [1, 2, 3, 4, 5, 6]
+
+
+def test_piper_audio_has_the_microphone_shape():
+    out = tts.synthesize_piper(FakePiper([piper_chunk([1, 2, 3])]), "Hi.")
+
+    assert out.shape == (3, 1)
+    assert out.dtype == np.int16
+
+
+def test_piper_with_nothing_to_say_gives_empty_audio():
+    out = tts.synthesize_piper(FakePiper([]), "")
+
+    assert out.shape == (0, 1)
+    assert out.dtype == np.int16
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        piper_chunk([1, 2], rate=22050),
+        piper_chunk([1, 2], channels=2),
+        piper_chunk([1, 2], width=1),
+    ],
+    ids=["22-khz", "stereo", "8-bit"],
+)
+def test_piper_audio_it_cannot_send_is_rejected(bad):
+    # A medium voice is 22 kHz: played as 16 kHz it sounds slow and deep, far from the
+    # cause. Failing here names the problem.
+    with pytest.raises(ValueError):
+        tts.synthesize_piper(FakePiper([bad]), "Hi.")
+
+
+# --- synthesize: Edge within the deadline, otherwise Piper ---
+
+EDGE_AUDIO = np.full((5, 1), 1, dtype=np.int16)
+PIPER_VALUES = [2, 2, 2]
+
+
+def voices(piper=None):
+    return tts.Voices(edge=object(), piper=piper or FakePiper([piper_chunk(PIPER_VALUES)]))
+
+
+def fake_edge(delay=0.0, error=None, cancelled=None):
+    async def synthesize_edge(edge, text):
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            if cancelled is not None:
+                cancelled.append(True)
+            raise
+        if error is not None:
+            raise error
+        return EDGE_AUDIO
+
+    return synthesize_edge
+
+
+def test_fallback_not_used_when_edge_is_in_time(monkeypatch):
+    piper = FakePiper([piper_chunk(PIPER_VALUES)])
+    monkeypatch.setattr(tts, "synthesize_edge", fake_edge())
+
+    out = asyncio.run(tts.synthesize(voices(piper), "Hi."))
+
+    assert np.array_equal(out, EDGE_AUDIO)
+    assert piper.texts == []  # Piper is only the fallback
+
+
+def test_fallback_to_piper_at_the_deadline(monkeypatch):
+    monkeypatch.setattr(tts, "EDGE_DEADLINE", 0.05)
+    monkeypatch.setattr(tts, "synthesize_edge", fake_edge(delay=5))
+
+    started = time.perf_counter()
+    out = asyncio.run(tts.synthesize(voices(), "Hi."))
+    took = time.perf_counter() - started
+
+    assert out[:, 0].tolist() == PIPER_VALUES
+    # Piper answers at the deadline, not after Edge's 5 s: that is the whole point.
+    assert took < 1.0
+
+
+def test_fallback_at_the_deadline_is_logged(monkeypatch, capsys):
+    monkeypatch.setattr(tts, "EDGE_DEADLINE", 0.05)
+    monkeypatch.setattr(tts, "synthesize_edge", fake_edge(delay=5))
+
+    asyncio.run(tts.synthesize(voices(), "Hi."))
+
+    # The slow case is the common one (15-36 s in the 5C logs), so it must show up too.
+    assert "Edge failed" in capsys.readouterr().out
+
+
+def test_a_cancelled_answer_does_not_fall_back_to_piper(monkeypatch):
+    piper = FakePiper([piper_chunk(PIPER_VALUES)])
+    monkeypatch.setattr(tts, "synthesize_edge", fake_edge(delay=5))
+
+    async def run():
+        task = asyncio.create_task(tts.synthesize(voices(piper), "Hi."))
+        await asyncio.sleep(0.05)
+        task.cancel()  # what the server does when the satellite disconnects
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+    # A cancel is not Edge failing: caught as one, Piper would speak to nobody and the
+    # task would never learn it was cancelled.
+    assert piper.texts == []
+
+
+def test_fallback_cancels_the_slow_edge(monkeypatch):
+    cancelled = []
+    monkeypatch.setattr(tts, "EDGE_DEADLINE", 0.05)
+    monkeypatch.setattr(tts, "synthesize_edge", fake_edge(delay=5, cancelled=cancelled))
+
+    asyncio.run(tts.synthesize(voices(), "Hi."))
+
+    # A stalled Edge request left running would hold its connection open for nothing.
+    assert cancelled == [True]
+
+
+def test_fallback_when_edge_fails(monkeypatch, capsys):
+    monkeypatch.setattr(tts, "synthesize_edge", fake_edge(error=ConnectionError("no DNS")))
+
+    out = asyncio.run(tts.synthesize(voices(), "Hi."))
+
+    assert out[:, 0].tolist() == PIPER_VALUES
+    # Logged, so a fallback is visible in the server's output, not silent.
+    assert "Edge failed" in capsys.readouterr().out
+
+
+def test_fallback_gives_piper_the_same_text(monkeypatch):
+    piper = FakePiper([piper_chunk(PIPER_VALUES)])
+    monkeypatch.setattr(tts, "synthesize_edge", fake_edge(error=ConnectionError()))
+
+    asyncio.run(tts.synthesize(voices(piper), "It is noon."))
+
+    assert piper.texts == ["It is noon."]
+
+
+def test_fallback_runs_piper_outside_the_event_loop(monkeypatch):
+    piper = FakePiper([piper_chunk(PIPER_VALUES)])
+    monkeypatch.setattr(tts, "synthesize_edge", fake_edge(error=ConnectionError()))
+
+    async def run():
+        await tts.synthesize(voices(piper), "Hi.")
+        return threading.current_thread()
+
+    loop_thread = asyncio.run(run())
+
+    # Piper works the CPU for a moment; on the loop's thread it would stall the server.
+    assert piper.threads and piper.threads[0] is not loop_thread
+
+
+def test_fallback_error_reaches_the_caller_when_both_fail(monkeypatch):
+    monkeypatch.setattr(tts, "synthesize_edge", fake_edge(error=ConnectionError()))
+    broken_piper = FakePiper([piper_chunk([1], rate=22050)])
+
+    # The server turns this into tts_error; swallowing it would send silence instead.
+    with pytest.raises(ValueError):
+        asyncio.run(tts.synthesize(voices(broken_piper), "Hi."))
 
 
 # --- setup checks ---
@@ -224,10 +432,30 @@ def test_missing_ffmpeg_is_reported_clearly(monkeypatch):
         tts.load_voice()
 
 
-def test_importing_mika_tts_does_not_need_edge_tts():
-    # edge-tts is an optional extra: mika.tts must import without it, which is why
-    # the import sits inside load_voice. A top-level import would break that.
+def test_missing_piper_voice_says_how_to_download_it(monkeypatch, tmp_path):
+    monkeypatch.setattr(shutil, "which", lambda name: "ffmpeg")
+    monkeypatch.setenv(tts.PIPER_VOICE_NAME, str(tmp_path / "missing.onnx"))
+
+    with pytest.raises(FileNotFoundError, match="download_voices"):
+        tts.load_voice()
+
+
+def test_piper_voice_defaults_to_a_16_khz_voice(monkeypatch):
+    monkeypatch.delenv(tts.PIPER_VOICE_NAME, raising=False)
+
+    assert tts.piper_voice_path().endswith("en_US-lessac-low.onnx")
+
+
+def test_piper_voice_can_be_overridden(monkeypatch):
+    monkeypatch.setenv(tts.PIPER_VOICE_NAME, "C:/voices/other.onnx")
+
+    assert tts.piper_voice_path() == "C:/voices/other.onnx"
+
+
+def test_importing_mika_tts_needs_neither_engine():
+    # Both are optional extras: mika.tts must import without them, which is why the
+    # imports sit inside load_voice. A top-level import would break that.
     with open(tts.__file__, encoding="utf-8") as f:
         top_level = [line for line in f if line.startswith(("import ", "from "))]
 
-    assert not any("edge_tts" in line for line in top_level)
+    assert not any("edge_tts" in line or "piper" in line for line in top_level)

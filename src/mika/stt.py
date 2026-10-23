@@ -8,6 +8,8 @@ from mika.vad import FULL_SCALE
 WHISPER_MODEL = "base"
 # A fixed language skips auto-detection, which is slow and unreliable on short clips.
 WHISPER_LANGUAGE = "en"
+# Words Whisper should expect. Without it, "Mika" came out as "Mita" every time.
+WHISPER_HOTWORDS = "Mika"
 
 
 def load_whisper():
@@ -26,6 +28,7 @@ def transcribe(model, audio):
         beam_size=1,
         vad_filter=True,
         condition_on_previous_text=False,  # avoids repeated or looping text
+        hotwords=WHISPER_HOTWORDS,
     )
 
     # segments is a generator: transcription happens inside this loop,

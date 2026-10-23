@@ -65,7 +65,7 @@ extra fields are ignored.
 
 | Message | Meaning |
 |---|---|
-| `{"type": "start"}` | A new question begins. Sent when the button is pressed; later also when the wake word ("Hey Mika") is detected on the device. The server does not need to know which one it was. |
+| `{"type": "start"}` | A new question begins. Sent when the device detects the wake word ("Hey Mika"). A push button, if the firmware has one, sends the same message: the server does not need to know which one it was. |
 
 ### Server → satellite
 
@@ -121,8 +121,13 @@ error) is answered with `busy` at once; it does not start a second question afte
 the first one ends.
 
 Start and end of speech are decided on the server (200 ms of sound starts it,
-500 ms of silence ends it, 10 s maximum), so the satellite only needs a button
-and a microphone.
+500 ms of silence ends it, 10 s maximum), so the satellite only needs its wake
+word and a microphone.
+
+The wake word runs on the device, so no audio leaves it until "Hey Mika" is heard.
+After `start`, the server waits up to 3 s for the question to begin. For a
+question said in one breath ("Hey Mika, what time is it?"), start streaming right
+after the wake word is detected, or the first words are lost.
 
 ## Mika's voice (server → satellite)
 
@@ -143,8 +148,8 @@ What the satellite does:
 
 - Keep a small queue of frames, at least 16 (about 10 KB), and play from it
   through I2S as frames arrive.
-- **Turn the microphone (and later the wake word) off while speaking**, or Mika's
-  own voice from the speaker could trigger a new question.
+- **Turn the microphone and the wake word off while speaking**, or Mika's own
+  voice from the speaker could trigger a new question.
 - On `done`, play what is still queued, then go back to idle.
 - On `tts_error`, there is no speech: show the error briefly and go idle.
 
@@ -171,8 +176,8 @@ change the state or the LED. That is what the "Turn over?" column above means.
 
 ## Decided
 
-- Trigger: a push button for now; a wake word ("Hey Mika") on the device later.
-  Both send the same `start` message.
+- Trigger: the wake word ("Hey Mika"), detected on the device. A push button is
+  optional (handy for testing, or in a noisy room); it sends the same `start`.
 - Server discovery: mDNS, name `mika.local`, service `_mika._tcp`; the LAN IP
   as a fallback where multicast is blocked.
 - Server location: the laptop for now; where it runs later is still open.
