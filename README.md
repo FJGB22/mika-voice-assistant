@@ -14,8 +14,9 @@ A small voice-assistant project, built one stage at a time. It runs in two ways:
   `fake_satellite` plays the device's part from the laptop, speakers included.
 
 Mika speaks in the same voice as the Mika VTuber (`python -m mika.tts` tries
-the voice on its own). Later stages add a wake word and real-time data such as
-weather and time.
+the voice on its own). When that voice (Edge TTS, in the cloud) is slow or
+unreachable, Piper speaks instead, on the laptop, so the satellite is never left
+silent. Later stages add real-time data such as weather and time.
 
 ## Requirements
 
@@ -23,6 +24,7 @@ weather and time.
 - A Gemini API key from [aistudio.google.com](https://aistudio.google.com)
 - [ffmpeg](https://ffmpeg.org) on PATH, for Mika's voice in `mika.tts` and the
   server (on Windows: `winget install Gyan.FFmpeg`, then open a new terminal)
+- A Piper voice file for the fallback voice, downloaded once (see Installation)
 
 Use a separate Google Cloud project for this key. Free-tier quota is counted
 per project, not per key, so sharing a project with another app means sharing
@@ -45,10 +47,22 @@ The extras keep installs small where a part is not needed:
 | `audio` | sounddevice, numpy | the laptop mic: `mika` and `fake_satellite` |
 | `whisper` | faster-whisper | transcription: `mika`, the server |
 | `net` | websockets, numpy, zeroconf | the server, `fake_satellite`, and `mika.discovery` |
-| `tts` | edge-tts, numpy | Mika's voice: `mika.tts` and the server |
+| `tts` | edge-tts, piper-tts, numpy | Mika's voice and its fallback: `mika.tts` and the server |
 | `dev` | pytest, ruff | tests and linting (the tests also need `whisper` and `net`) |
 
 faster-whisper is a large download, so the first install takes a few minutes.
+
+Then download the fallback voice once, outside the repository:
+
+```bash
+python -m piper.download_voices en_US-lessac-low --data-dir %USERPROFILE%\.mika\voices
+# PowerShell: --data-dir $HOME\.mika\voices    macOS / Linux: --data-dir ~/.mika/voices
+```
+
+It must be a "low" voice: those are 16 kHz, the satellite's rate. "Medium" and
+"high" voices are 22 kHz and are refused with an error that says so. The server
+and `mika.tts` stop at startup, with this command in the message, if the voice
+file is missing.
 
 Verify from outside the project folder:
 
@@ -74,6 +88,7 @@ See `.env.example` for the variables the program expects. Currently:
 | Variable | Required | Purpose |
 |---|---|---|
 | `LLM_API_KEY` | yes | Gemini API key |
+| `TTS_VOICE` | no | path to another Piper voice (`.onnx`, 16 kHz); default `~/.mika/voices/en_US-lessac-low.onnx` |
 
 The lookup order is **system environment first, file second**. A value already
 present in the environment is never overwritten by the file. That way the same
@@ -105,6 +120,7 @@ python -c "from mika.audio import meter; meter()"
 ```bash
 python -m mika.tts "Hello, I am Mika. How can I help you today?"
 python -m mika.tts "Hello, I am Mika." --wav mika.wav   # save instead of playing
+python -m mika.tts "Hello, I am Mika." --piper          # the fallback voice only
 ```
 
 It prints how long the speech is and how long it took to be ready, then plays it:
@@ -115,8 +131,19 @@ It prints how long the speech is and how long it took to be ready, then plays it
 
 That example was measured on home Wi-Fi in Jakarta. "Ready after" is almost all
 network time to Microsoft's servers: the wait before Mika can start talking.
-Without ffmpeg on PATH it stops at startup with a message saying so; without a
-network connection it fails with an error instead of hanging.
+Without ffmpeg on PATH, or without the Piper voice, it stops at startup with a
+message saying so.
+
+If Edge has not delivered within 4 s (`EDGE_DEADLINE` in `tts.py`), or fails,
+Piper speaks instead and one line says why:
+
+```
+Edge failed (no answer within 4.0 s); speaking with Piper
+```
+
+The server prints the same line, so its log shows how often the fallback was
+needed. If that happens while Edge is merely a little late, raise
+`EDGE_DEADLINE`.
 
 ### As a server
 
@@ -223,7 +250,8 @@ Gemini and Edge are replaced by fakes, the server tests talk to a real WebSocket
 `localhost` with a port the OS picks, and the mDNS tests use a fake socket and a
 fake zeroconf, so nothing is ever announced on your network. The TTS tests decode
 real MP3 that ffmpeg itself generates (a 440 Hz tone), so they check the actual
-conversion; without ffmpeg on PATH they are skipped, which pytest reports.
+conversion; without ffmpeg on PATH they are skipped, which pytest reports. Piper
+is replaced by a fake voice too, so no voice file is needed to run the tests.
 
 ### Pre-commit hook
 
@@ -300,10 +328,13 @@ directly; nothing is written to disk. The divisor is 32768, not 32767: int16
 runs from -32768 to 32767, and dividing by 32767 would put the lowest sample
 just outside the range.
 
-**Speech is detected on the server, not on the device.** The satellite only
-needs a button and a microphone; start and end of speech, timeouts and the
-length cap live in one place, in Python, where they are tested. The device
-streams 20 ms frames until the server tells it to stop.
+**The wake word runs on the device; speech is detected on the server.** The
+satellite listens for "Hey Mika" itself, so no audio leaves it until the wake word
+is heard, and then sends `start`. A push button, if the firmware has one, sends
+the same message, so the server never needs to know which one it was. From there,
+start and end of speech, timeouts and the length cap live in one place, in
+Python, where they are tested. The device streams 20 ms frames until the server
+tells it to stop.
 
 **The protocol rules never touch a socket.** `Session` takes messages in and
 returns the messages to send, as a list; only `server.py` knows about
@@ -383,13 +414,36 @@ protocol and the firmware never learn which TTS engine made it, and
 with zeros (silence) so the last frame is full: any other value would make the
 speaker click.
 
-**One engine behind one function.** Only Edge TTS is implemented, with the same
-voice as the VTuber (`en-US-AnaNeural`, +18% rate, +8 Hz pitch) so both sound like
-one character. Edge is not an official Microsoft API and may change; replacing it
-means writing one function that returns the same shape. There is deliberately no
-provider switch until a second engine actually exists. edge-tts (LGPL-3.0) is an
-optional extra, imported inside `load_voice`, so the server and the tests run
-without it.
+**Edge first, Piper only as a fallback.** Edge speaks with the same voice as the
+VTuber (`en-US-AnaNeural`, +18% rate, +8 Hz pitch), so both sound like one
+character. But Edge runs on Microsoft's servers: the 5C timing logs showed it
+usually ready in 2-3 s, yet twice in five tries it took 15.7 s and 36.4 s. So
+`synthesize` waits at most `EDGE_DEADLINE` (4 s), cancels Edge if it is not done,
+and lets Piper speak on the laptop instead, in well under a second. A different
+voice for one answer is better than half a minute of silence. Edge is not an
+official Microsoft API and may change; Piper also covers that.
+
+Both engines sit behind the same `synthesize(voices, text)`, loaded together by
+`load_voice` into one `Voices` value, so `server.py` did not change. The two
+failure paths are kept apart on purpose: a cancelled answer (the satellite
+disconnected) is not treated as Edge failing, so Piper never speaks to nobody; and
+a Piper error is not caught, so when both engines fail the server still sends
+`tts_error` instead of silence.
+
+**Piper's voice must already be 16 kHz.** A "low" voice is 16 kHz, the
+satellite's rate, so its audio needs no resampling. Any other rate, width or
+channel count is refused with an error naming it, rather than converted: a 22 kHz
+voice played as 16 kHz sounds slow and deep, and nothing would point at the cause.
+
+**Both TTS engines are optional imports.** edge-tts (LGPL-3.0) and piper-tts
+(GPL-3.0) are imported inside `load_voice`, so the rest of Mika and the tests run
+without them. Mika itself is MIT; check Piper's license before shipping it inside
+something that is sold.
+
+**Whisper is told to expect "Mika".** Without a hint, Whisper `base` heard "Mita"
+every time, and Gemini spent its reply correcting the user's spelling, which made
+the answer longer and Edge slower too. `hotwords="Mika"` fixes the transcript at
+the start of that chain.
 
 **ffmpeg decodes and resamples in one step.** Edge always sends 24 kHz mono MP3.
 ffmpeg turns it into raw 16-bit little-endian PCM at 16 kHz through stdin and
@@ -425,7 +479,7 @@ mika/
 │  ├─ session.py         # protocol rules for one satellite, no networking
 │  ├─ server.py          # WebSocket server: one Session per connection
 │  ├─ discovery.py       # mDNS: announce as mika.local, find a running server
-│  ├─ tts.py             # Edge TTS -> ffmpeg -> 16 kHz audio in the microphone's format
+│  ├─ tts.py             # Edge TTS (Piper as fallback) -> 16 kHz audio in the mic's format
 │  └─ fake_satellite.py  # stands in for the ESP32: mic or WAV in, laptop speakers out
 ├─ tests/
 │  ├─ test_config.py
@@ -446,4 +500,4 @@ mika/
 Each module has one reason to change: `protocol.py` when the contract with the
 firmware changes, `session.py` when the conversation rules change, `server.py`
 when the transport changes, `discovery.py` when the way satellites find the
-server changes, `tts.py` when the TTS engine changes.
+server changes, `tts.py` when a TTS engine changes.
