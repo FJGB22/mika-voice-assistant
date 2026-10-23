@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from mika.config import ENV_PATH, apply_env, load_env
 from mika.vad import SAMPLE_RATE
 
 # The same voice as Mika 1.0 (the VTuber), so both are recognisably the same character.
@@ -119,27 +120,37 @@ async def synthesize_edge(edge, text):
 
 
 def synthesize_piper(piper, text):
-    # TODO (5D): speak `text` with Piper; return (samples, 1) int16 at SAMPLE_RATE.
-    #   - piper.synthesize(text) yields one chunk per sentence
-    #   - each chunk has sample_rate, sample_width (bytes), sample_channels, and
-    #     audio_int16_array (1-D int16)
-    #   - anything but SAMPLE_RATE, SAMPLE_WIDTH and 1 channel: raise ValueError that
-    #     names what it got (a 22 kHz "medium" voice would play slow and deep)
-    #   - join the chunks in order with np.concatenate, then reshape to (-1, 1)
-    #   - no chunks at all: np.zeros((0, 1), dtype=np.int16)
-    raise NotImplementedError
+    # Blocking: Piper runs its model on the CPU, so synthesize calls this in a thread.
+    chunks = list(piper.synthesize(text))  # one chunk per sentence
+    if not chunks:
+        return np.zeros((0, 1), dtype=np.int16)
+    # Rejected instead of converted: a 22 kHz "medium" voice played as 16 kHz sounds
+    # slow and deep, and nothing would point at the cause.
+    for chunk in chunks:
+        if chunk.sample_rate != SAMPLE_RATE:
+            raise ValueError(f"Expected {SAMPLE_RATE} Hz, got {chunk.sample_rate} Hz")
+        if chunk.sample_width != SAMPLE_WIDTH:
+            raise ValueError(f"Expected {SAMPLE_WIDTH} bytes, got {chunk.sample_width} bytes")
+        if chunk.sample_channels != 1:
+            raise ValueError(f"Expected 1 channel, got {chunk.sample_channels} channels")
+    return np.concatenate([chunk.audio_int16_array for chunk in chunks]).reshape(-1, 1)
 
 
 async def synthesize(voices, text):
-    # TODO (5D): Edge if it is ready within EDGE_DEADLINE, otherwise Piper.
-    #   - try: return await asyncio.wait_for(synthesize_edge(voices.edge, text),
-    #     EDGE_DEADLINE)
-    #   - except Exception as err: print why Edge was not used, e.g.
-    #     "Edge failed (...); speaking with Piper". At the deadline err is a
-    #     TimeoutError, so you can print "no answer within 4.0 s" for that case.
-    #   - then: return await asyncio.to_thread(synthesize_piper, voices.piper, text)
-    #   Do not catch errors from Piper: if both fail, the server must send tts_error.
-    raise NotImplementedError
+    try:
+        # wait_for cancels Edge at the deadline, so a stalled request does not keep its
+        # connection open for an answer nobody will use.
+        return await asyncio.wait_for(synthesize_edge(voices.edge, text), EDGE_DEADLINE)
+    # Exception, not BaseException: when the satellite disconnects, the answer is
+    # cancelled, and Piper must not start speaking to nobody.
+    except Exception as err:
+        if isinstance(err, TimeoutError):
+            print(f"Edge failed (no answer within {EDGE_DEADLINE:.1f} s); speaking with Piper")
+        else:
+            # !r: many network errors have an empty message; the type always shows.
+            print(f"Edge failed ({err!r}); speaking with Piper")
+        # Not caught: if Piper fails too, the server must send tts_error, not silence.
+        return await asyncio.to_thread(synthesize_piper, voices.piper, text)
 
 
 def save_wav(path, audio):
@@ -156,6 +167,14 @@ def main():
     parser.add_argument("--wav", help="save the audio to this file instead of playing it")
     parser.add_argument("--piper", action="store_true", help="skip Edge and use Piper")
     args = parser.parse_args()
+
+    # TTS_VOICE may be set in the secrets file, as for the server; without this, the
+    # server and this command could quietly use different Piper voices. Edge needs no
+    # key, so a missing file is fine here.
+    try:
+        apply_env(load_env(ENV_PATH))
+    except FileNotFoundError:
+        pass
 
     try:
         voices = load_voice()

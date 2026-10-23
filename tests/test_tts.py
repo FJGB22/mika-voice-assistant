@@ -341,6 +341,34 @@ def test_fallback_to_piper_at_the_deadline(monkeypatch):
     assert took < 1.0
 
 
+def test_fallback_at_the_deadline_is_logged(monkeypatch, capsys):
+    monkeypatch.setattr(tts, "EDGE_DEADLINE", 0.05)
+    monkeypatch.setattr(tts, "synthesize_edge", fake_edge(delay=5))
+
+    asyncio.run(tts.synthesize(voices(), "Hi."))
+
+    # The slow case is the common one (15-36 s in the 5C logs), so it must show up too.
+    assert "Edge failed" in capsys.readouterr().out
+
+
+def test_a_cancelled_answer_does_not_fall_back_to_piper(monkeypatch):
+    piper = FakePiper([piper_chunk(PIPER_VALUES)])
+    monkeypatch.setattr(tts, "synthesize_edge", fake_edge(delay=5))
+
+    async def run():
+        task = asyncio.create_task(tts.synthesize(voices(piper), "Hi."))
+        await asyncio.sleep(0.05)
+        task.cancel()  # what the server does when the satellite disconnects
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+    # A cancel is not Edge failing: caught as one, Piper would speak to nobody and the
+    # task would never learn it was cancelled.
+    assert piper.texts == []
+
+
 def test_fallback_cancels_the_slow_edge(monkeypatch):
     cancelled = []
     monkeypatch.setattr(tts, "EDGE_DEADLINE", 0.05)
